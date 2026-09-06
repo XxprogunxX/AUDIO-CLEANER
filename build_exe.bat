@@ -1,34 +1,18 @@
 @echo off
-title Compilando Detector de Duplicados de Audio
-echo ========================================================
-echo   COMPILANDO APLICACION COMERCIAL (.EXE AUTONOMO)
-echo ========================================================
-echo.
-
-REM 1. Instalar dependencias necesarias incluyendo PyInstaller
-echo [1/3] Verificando dependencias...
-pip install -r requirements.txt
-pip install pyinstaller
-
-REM 2. Limpiar compilaciones anteriores
-echo.
-echo [2/3] Limpiando carpetas temporales de compilacion...
-if exist "dist" rmdir /s /q "dist"
-if exist "build" rmdir /s /q "build"
-
-REM 3. Ejecutar PyInstaller con la configuracion .spec
-echo.
-echo [3/3] Empaquetando aplicacion con PyInstaller...
-pyinstaller --clean build_installer.spec
-
-echo.
-if exist "dist\AudioDuplicateDetector.exe" (
-    echo ========================================================
-    echo   EXITO: Aplicacion compilada correctamente!
-    echo   Archivo generado: dist\AudioDuplicateDetector.exe
-    echo   Listo para distribuir y ejecutar en otras PCs.
-    echo ========================================================
-) else (
-    echo [ERROR] Hubo un problema durante la compilacion.
-)
-pause
+setlocal
+pushd "%~dp0"
+echo Instalando dependencias fijadas...
+python -m pip install -r requirements-lock.txt
+if errorlevel 1 goto failed
+echo Compilando aplicacion con sus dependencias de audio...
+python -m PyInstaller --clean --noconfirm build_installer.spec
+if errorlevel 1 goto failed
+python scripts\check_exe_binaries.py
+if errorlevel 1 goto failed
+echo Compilacion verificada: dist\AudioDuplicateDetector.exe
+popd
+exit /b 0
+:failed
+echo ERROR: La compilacion o la verificacion fallo. No distribuir este resultado.
+popd
+exit /b 1

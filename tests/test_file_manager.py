@@ -1,3 +1,4 @@
+from tests.group_fixtures import with_pair_evidence
 import os
 import shutil
 import tempfile
@@ -42,13 +43,13 @@ class TestFileManager(unittest.TestCase):
         t1.action = FileAction.UNSET
         t2.action = FileAction.UNSET
         
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G1",
             primary_type=DuplicateType.LOW_CONFIDENCE_REVIEW,
             tracks=[t1, t2],
             best_track_path="",
             requires_manual_review=True
-        )
+        ))
         
         modified = auto_apply_recommendations([group])
         self.assertEqual(modified, 0, "No debe modificar grupos con requires_manual_review=True")
@@ -59,23 +60,23 @@ class TestFileManager(unittest.TestCase):
         """TEST K: auto_apply_recommendations(...) debe retornar un entero correcto con grupos modificados."""
         t1 = AudioTrack(filepath="t1.mp3", filesize=1000)
         t2 = AudioTrack(filepath="t2.mp3", filesize=1000)
-        g1 = DuplicateGroup(
+        g1 = with_pair_evidence(DuplicateGroup(
             group_id="G1",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t1, t2],
             best_track_path="t1.mp3",
             requires_manual_review=False
-        )
+        ))
 
         t3 = AudioTrack(filepath="t3.mp3", filesize=1000)
         t4 = AudioTrack(filepath="t4.mp3", filesize=1000)
-        g2 = DuplicateGroup(
+        g2 = with_pair_evidence(DuplicateGroup(
             group_id="G2",
             primary_type=DuplicateType.POSSIBLE_DUPLICATE,
             tracks=[t3, t4],
             best_track_path="t3.mp3",
             requires_manual_review=True
-        )
+        ))
 
         modified = auto_apply_recommendations([g1, g2])
         self.assertIsInstance(modified, int)
@@ -94,12 +95,12 @@ class TestFileManager(unittest.TestCase):
         t_keep = AudioTrack(filepath=f_keep, filesize=1000, action=FileAction.KEEP)
         t_del = AudioTrack(filepath=f_del, filesize=1000, action=FileAction.DELETE)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_test",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t_keep, t_del],
             best_track_path=f_keep
-        )
+        ))
 
         deleted, failed, logs = delete_marked_duplicates_permanently([group], db=self.db)
         self.assertEqual(deleted, 1)
@@ -117,12 +118,12 @@ class TestFileManager(unittest.TestCase):
         t1 = AudioTrack(filepath=f1, filesize=1000, action=FileAction.DELETE)
         t2 = AudioTrack(filepath=f2, filesize=1000, action=FileAction.DELETE)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_unsafe",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t1, t2],
             best_track_path=f1
-        )
+        ))
 
         deleted, failed, logs = delete_marked_duplicates_permanently([group], db=self.db)
         self.assertEqual(deleted, 0, "No debe eliminar ningún archivo si no queda copia para conservar")
@@ -137,12 +138,12 @@ class TestFileManager(unittest.TestCase):
         f_keep = self._create_dummy_file("immune.mp3")
         t_keep = AudioTrack(filepath=f_keep, filesize=1000, action=FileAction.KEEP)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_immune",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t_keep],
             best_track_path=f_keep
-        )
+        ))
 
         deleted, failed, logs = delete_marked_duplicates_permanently([group], db=self.db)
         self.assertEqual(deleted, 0)
@@ -162,12 +163,12 @@ class TestFileManager(unittest.TestCase):
         self.db.upsert_track(t_keep)
         self.db.upsert_track(t_trash)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_trash_fail",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t_keep, t_trash],
             best_track_path=f_keep
-        )
+        ))
 
         success, failed, logs = trash_marked_duplicates([group], db=self.db)
         self.assertEqual(success, 0)
@@ -190,12 +191,12 @@ class TestFileManager(unittest.TestCase):
         self.db.upsert_track(t_keep)
         self.db.upsert_track(t_del)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_backup_success",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t_keep, t_del],
             best_track_path=f_keep
-        )
+        ))
         group.recalculate_space_saving()
         self.assertEqual(group.space_saving_bytes, 5000)
 

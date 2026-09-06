@@ -34,6 +34,7 @@ class AudioTrack:
     mtime: float = 0.0
     mtime_ns: int = 0
     quick_signature: str = ""
+    analysis_signature: str = ""
     sha256: str = ""
     audio_hash: str = ""
     duration: float = 0.0
@@ -89,6 +90,7 @@ class AudioTrack:
             "mtime": self.mtime,
             "mtime_ns": self.mtime_ns,
             "quick_signature": self.quick_signature,
+            "analysis_signature": self.analysis_signature,
             "sha256": self.sha256,
             "audio_hash": self.audio_hash,
             "duration": self.duration,
@@ -135,6 +137,7 @@ class AudioTrack:
             mtime=data.get("mtime", 0.0),
             mtime_ns=data.get("mtime_ns", int(data.get("mtime", 0.0) * 1_000_000_000)),
             quick_signature=data.get("quick_signature", ""),
+            analysis_signature=data.get("analysis_signature", ""),
             sha256=data.get("sha256", ""),
             audio_hash=data.get("audio_hash", ""),
             duration=data.get("duration", 0.0),
@@ -189,6 +192,8 @@ class DuplicateGroup:
     space_saving_bytes: int = 0
     requires_manual_review: bool = False
 
+    verified_pairs: List[List[str]] = field(default_factory=list)
+
     def recalculate_space_saving(self) -> int:
         if len(self.tracks) <= 1:
             self.space_saving_bytes = 0
@@ -205,6 +210,7 @@ class DuplicateGroup:
             "average_similarity": self.average_similarity,
             "space_saving_bytes": self.space_saving_bytes,
             "requires_manual_review": self.requires_manual_review,
+            "verified_pairs": self.verified_pairs,
             "tracks": [t.to_dict() for t in self.tracks]
         }
 
@@ -223,6 +229,20 @@ class DuplicateGroup:
         if ptype in (DuplicateType.POSSIBLE_DUPLICATE, DuplicateType.LOW_CONFIDENCE_REVIEW):
             req_review = True
 
+        pairs = data.get("verified_pairs", [])
+        if not isinstance(pairs, list) or any(
+            not isinstance(p, (list, tuple)) or len(p) != 2 or
+            not all(isinstance(x, str) for x in p) for p in pairs
+        ):
+            pairs = []
+        # Historical acoustic sessions have no evidence tying the retained copy
+        # to each deletion. Require new review rather than replaying old choices.
+        if ptype == DuplicateType.ACOUSTIC_DUPLICATE and not pairs:
+            req_review = True
+            for track in tracks:
+                if track.action == FileAction.DELETE:
+                    track.action = FileAction.UNSET
+
         return cls(
             group_id=data.get("group_id", ""),
             primary_type=ptype,
@@ -231,7 +251,8 @@ class DuplicateGroup:
             best_track_reason=data.get("best_track_reason", ""),
             average_similarity=float(data.get("average_similarity", 100.0)),
             space_saving_bytes=int(data.get("space_saving_bytes", 0)),
-            requires_manual_review=req_review
+            requires_manual_review=req_review,
+            verified_pairs=[list(p) for p in pairs]
         )
 
 
@@ -312,6 +333,7 @@ class ScanStats:
     elapsed_seconds: float = 0.0
     is_running: bool = False
     is_paused: bool = False
+    is_cancelled: bool = False
     current_file: str = ""
     phase: str = "Idle"
     progress_ratio: Optional[float] = None

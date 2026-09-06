@@ -51,6 +51,7 @@ class ScannerWorker(QThread):
     """Background thread for running the scan without blocking the GUI."""
     progress_updated = pyqtSignal(ScanStats)
     scan_finished = pyqtSignal(list)
+    scan_failed = pyqtSignal(str)
 
     def __init__(self, scanner: AudioScanner, folder: str):
         super().__init__()
@@ -72,6 +73,9 @@ class ScannerWorker(QThread):
             )
             if self.state != WorkerState.CANCELLING:
                 self.scan_finished.emit(groups)
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Scan failed")
+            self.scan_failed.emit(str(exc))
         finally:
             self.state = WorkerState.STOPPED
 
@@ -383,6 +387,7 @@ class AudioDuplicateDetectorApp(QMainWindow):
         self.worker = ScannerWorker(self.scanner, self.current_folder)
         self.worker.progress_updated.connect(self.scanner_view.update_stats)
         self.worker.scan_finished.connect(self._on_scan_finished)
+        self.worker.scan_failed.connect(self._on_scan_failed)
         self.worker.start()
 
     def _cancel_scan(self):
@@ -391,9 +396,22 @@ class AudioDuplicateDetectorApp(QMainWindow):
         else:
             self.scanner.stop()
 
+    def _on_scan_failed(self, message):
+        self.scanner.stats.is_running = False
+        self.scanner.stats.is_complete = False
+        self.scanner_view.finish_scanning_ui(0)
+        QMessageBox.critical(self, "Escaneo fallido", message)
+
     def _on_scan_finished(self, groups: List[DuplicateGroup]):
         self.all_groups = prune_duplicate_groups(groups)
         self.scanner_view.finish_scanning_ui(len(self.all_groups))
+        stats = self.scanner.stats
+        if not stats.is_complete:
+            QMessageBox.warning(self, "Cobertura incompleta",
+                f"El análisis no cubrió toda la biblioteca. Archivos fallidos: {stats.files_failed}; "
+                f"bloques fallidos: {stats.worker_failures}; "
+                f"coincidencias candidatas omitidas: {stats.candidate_pairs_dropped}. "
+                "Los resultados pueden omitir duplicados.")
         self._save_current_session()
 
         # Update all views data
@@ -603,9 +621,10 @@ class AudioDuplicateDetectorApp(QMainWindow):
         )
         if not target_dir:
             return
-        success, failed, logs = move_marked_duplicates(
-            self.filtered_groups, target_dir, db=self.db
-        )
+        from gui.operation_worker import run_file_operation
+        self.player.stop()
+        success, failed, logs = run_file_operation(self, lambda: move_marked_duplicates(
+            self.filtered_groups, target_dir, db=self.db))
         msg = f"Archivos movidos: {success}"
         if failed:
             msg += f"\nErrores al mover: {failed}"

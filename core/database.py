@@ -9,6 +9,7 @@ import threading
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any
 from core.models import AudioTrack
+from core.spectral_types import SpectralAssessment
 from core.fingerprint import compress_fingerprint, decompress_fingerprint
 
 
@@ -198,7 +199,9 @@ class Database:
             "artist": "TEXT",
             "album": "TEXT",
             "mtime_ns": "INTEGER DEFAULT 0",
-            "quick_signature": "TEXT DEFAULT ''"
+            "quick_signature": "TEXT DEFAULT ''",
+            "analysis_signature": "TEXT DEFAULT ''",
+            "spectral_assessment": "TEXT DEFAULT ''"
         }
         for col, col_type in STANDARD_OPTIONAL_COLUMNS.items():
             if col not in columns:
@@ -236,7 +239,7 @@ class Database:
                 "SELECT id, filepath, filesize, mtime, sha256, audio_hash, duration, format, "
                 "bitrate, samplerate, channels, bit_depth, is_lossless, spectral_cutoff, "
                 "fake_lossless_confidence, quality_score, quality_details, fingerprint, title, artist, album, "
-                "mtime_ns, quick_signature "
+                "mtime_ns, quick_signature, analysis_signature, spectral_assessment "
                 "FROM tracks"
             )
             for row in cursor.fetchall():
@@ -264,6 +267,10 @@ class Database:
                 lookup[row[0]] = (row[1], row[2] or 0, row[3] or "")
         return lookup
 
+    def get_analysis_cache_lookup(self) -> Dict[str, str]:
+        with self._get_connection() as conn:
+            return dict(conn.execute("SELECT filepath, analysis_signature FROM tracks"))
+
     def get_track_by_cache(self, filepath: str, filesize: int, mtime: float) -> Optional[AudioTrack]:
         """Returns cached AudioTrack if file size and modified time match."""
         with self._get_connection() as conn:
@@ -272,7 +279,7 @@ class Database:
                 "SELECT id, filepath, filesize, mtime, sha256, audio_hash, duration, format, "
                 "bitrate, samplerate, channels, bit_depth, is_lossless, spectral_cutoff, "
                 "fake_lossless_confidence, quality_score, quality_details, fingerprint, title, artist, album, "
-                "mtime_ns, quick_signature "
+                "mtime_ns, quick_signature, analysis_signature, spectral_assessment "
                 "FROM tracks WHERE filepath = ? AND filesize = ? AND ABS(mtime - ?) < 0.001",
                 (filepath, filesize, mtime)
             )
@@ -289,7 +296,7 @@ class Database:
                 "SELECT id, filepath, filesize, mtime, sha256, audio_hash, duration, format, "
                 "bitrate, samplerate, channels, bit_depth, is_lossless, spectral_cutoff, "
                 "fake_lossless_confidence, quality_score, quality_details, fingerprint, title, artist, album, "
-                "mtime_ns, quick_signature "
+                "mtime_ns, quick_signature, analysis_signature, spectral_assessment "
                 "FROM tracks WHERE filepath = ? AND filesize = ? AND mtime_ns = ?",
                 (filepath, filesize, mtime_ns)
             )
@@ -310,8 +317,8 @@ class Database:
                     filepath, filesize, mtime, sha256, audio_hash, duration, format,
                     bitrate, samplerate, channels, bit_depth, is_lossless, spectral_cutoff,
                     fake_lossless_confidence, quality_score, quality_details, fingerprint, title, artist, album,
-                    mtime_ns, quick_signature, last_scanned
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    mtime_ns, quick_signature, analysis_signature, spectral_assessment, last_scanned
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(filepath) DO UPDATE SET
                     filesize = excluded.filesize,
                     mtime = excluded.mtime,
@@ -334,6 +341,8 @@ class Database:
                     album = excluded.album,
                     mtime_ns = excluded.mtime_ns,
                     quick_signature = excluded.quick_signature,
+                    analysis_signature = excluded.analysis_signature,
+                    spectral_assessment = excluded.spectral_assessment,
                     last_scanned = CURRENT_TIMESTAMP;
             """, (
                 track.filepath, track.filesize, track.mtime, track.sha256, track.audio_hash,
@@ -341,7 +350,7 @@ class Database:
                 track.bit_depth, 1 if track.is_lossless else 0, track.spectral_cutoff,
                 track.fake_lossless_confidence, track.quality_score, track.quality_details,
                 fp_blob, track.title, track.artist, track.album,
-                track.mtime_ns, track.quick_signature
+                track.mtime_ns, track.quick_signature, track.analysis_signature, track.spectral_assessment.value
             ))
 
     def upsert_tracks_batch(self, tracks: List[AudioTrack]):
@@ -357,7 +366,7 @@ class Database:
                 t.bit_depth, 1 if t.is_lossless else 0, t.spectral_cutoff,
                 t.fake_lossless_confidence, t.quality_score, t.quality_details,
                 fp_blob, t.title, t.artist, t.album,
-                t.mtime_ns, t.quick_signature
+                t.mtime_ns, t.quick_signature, t.analysis_signature, t.spectral_assessment.value
             ))
         with self._get_connection() as conn:
             conn.executemany("""
@@ -365,8 +374,8 @@ class Database:
                     filepath, filesize, mtime, sha256, audio_hash, duration, format,
                     bitrate, samplerate, channels, bit_depth, is_lossless, spectral_cutoff,
                     fake_lossless_confidence, quality_score, quality_details, fingerprint, title, artist, album,
-                    mtime_ns, quick_signature, last_scanned
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    mtime_ns, quick_signature, analysis_signature, spectral_assessment, last_scanned
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(filepath) DO UPDATE SET
                     filesize = excluded.filesize,
                     mtime = excluded.mtime,
@@ -389,6 +398,8 @@ class Database:
                     album = excluded.album,
                     mtime_ns = excluded.mtime_ns,
                     quick_signature = excluded.quick_signature,
+                    analysis_signature = excluded.analysis_signature,
+                    spectral_assessment = excluded.spectral_assessment,
                     last_scanned = CURRENT_TIMESTAMP;
             """, data)
 
@@ -416,7 +427,7 @@ class Database:
                     f"SELECT id, filepath, filesize, mtime, sha256, audio_hash, duration, format, "
                     f"bitrate, samplerate, channels, bit_depth, is_lossless, spectral_cutoff, "
                     f"fake_lossless_confidence, quality_score, quality_details, fingerprint, title, artist, album, "
-                    f"mtime_ns, quick_signature "
+                    f"mtime_ns, quick_signature, analysis_signature, spectral_assessment "
                     f"FROM tracks WHERE filepath IN ({placeholders})",
                     chunk
                 )
@@ -476,7 +487,7 @@ class Database:
                 f"SELECT id, filepath, filesize, mtime, sha256, audio_hash, duration, format, "
                 f"bitrate, samplerate, channels, bit_depth, is_lossless, spectral_cutoff, "
                 f"fake_lossless_confidence, quality_score, quality_details, {fp_col}, title, artist, album, "
-                f"mtime_ns, quick_signature "
+                f"mtime_ns, quick_signature, analysis_signature, spectral_assessment "
                 f"FROM tracks"
             )
             params = ()
@@ -535,6 +546,10 @@ class Database:
         mtime_ns = row[21] if len(row) > 21 and row[21] is not None else int((mtime or 0.0) * 1_000_000_000)
         quick_sig = row[22] if len(row) > 22 and row[22] is not None else ""
 
+        try:
+            assessment = SpectralAssessment(row[24]) if len(row) > 24 else SpectralAssessment.UNKNOWN
+        except (ValueError, TypeError):
+            assessment = SpectralAssessment.UNKNOWN
         raw_fp = (decompress_fingerprint(fp_blob) if fp_blob else []) if decompress_fp else []
         return AudioTrack(
             id=tid,
@@ -543,6 +558,8 @@ class Database:
             mtime=mtime,
             mtime_ns=mtime_ns or 0,
             quick_signature=quick_sig or "",
+            analysis_signature=(row[23] or "") if len(row) > 23 else "",
+            spectral_assessment=assessment,
             sha256=sha256 or "",
             audio_hash=audio_hash or "",
             duration=duration or 0.0,

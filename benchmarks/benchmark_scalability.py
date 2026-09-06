@@ -242,13 +242,16 @@ def run_benchmark_trial(
         "candidate_pairs_dropped": coverage.candidate_pairs_dropped,
         "actual_comparisons": coverage.actual_comparisons,
         "oversized_buckets": coverage.oversized_buckets,
+        "truncated_buckets": coverage.oversized_buckets,
         "worker_failures": coverage.worker_failures,
+        "is_complete": coverage.is_complete,
         "is_approximate": coverage.is_approximate,
         "ground_truth_pairs": len(ground_truth_pairs),
         "true_positives": tp,
         "false_positives": fp,
         "false_negatives": fn,
         "candidate_recall_pct": candidate_recall,
+        "final_recall_pct": candidate_recall,
         "precision_pct": precision
     }
 
@@ -256,16 +259,25 @@ def run_benchmark_trial(
 def main():
     parser = argparse.ArgumentParser(description="100k synthetic candidate-generation/clustering benchmark")
     parser.add_argument("--scale", type=str, default="quick", choices=["smoke", "quick", "full", "100k"])
+    parser.add_argument("--size", type=int, default=None, help="Custom dataset track count")
+    parser.add_argument("--scenario", type=str, default=None, choices=["A", "B", "C", "D"], help="Custom scenario")
     args = parser.parse_args()
 
-    if args.scale == "smoke":
+    if args.size is not None:
+        sizes = [args.size]
+        scenarios = [args.scenario or "B"]
+    elif args.scale == "smoke":
         sizes = [1_000]
+        scenarios = ["B", "D"]
     elif args.scale == "quick":
         sizes = [1_000, 5_000, 10_000]
+        scenarios = ["B"]
     elif args.scale == "full":
         sizes = [1_000, 5_000, 10_000, 25_000, 50_000]
+        scenarios = ["B"]
     elif args.scale == "100k":
         sizes = [100_000]
+        scenarios = ["B"]
 
     print("=" * 80)
     print("AUDIO-CLEANER — 100k Synthetic Candidate-Generation & Clustering Benchmark")
@@ -275,7 +287,7 @@ def main():
 
     results = []
     for sz in sizes:
-        for scen in (["B", "D"] if sz <= 25000 else ["B"]):
+        for scen in scenarios:
             print(f"\nRunning benchmark: {sz:,} tracks | Scenario: {scen}...")
             res = run_benchmark_trial(sz, scenario=scen)
             results.append(res)

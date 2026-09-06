@@ -9,6 +9,8 @@ import zlib
 import struct
 import hashlib
 import subprocess
+import threading
+import time
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
@@ -316,6 +318,9 @@ def verify_full_normalized_pcm_match(
     filepath_b: str,
     sample_rate: Optional[int] = None,
     chunk_size: int = 65536,
+    total_timeout: float = 300.0,
+    stall_timeout: float = 15.0,
+    is_cancelled=None,
     **kwargs
 ) -> bool:
     """
@@ -338,14 +343,18 @@ def verify_full_normalized_pcm_match(
         # Incompatible streams: reject strict EXACT_AUDIO
         return False
 
+    ffmpeg_bin = get_ffmpeg_path()
+    if not ffmpeg_bin or total_timeout <= 0 or stall_timeout <= 0 or chunk_size <= 0:
+        return False
+
     cmd_a = [
-        "ffmpeg", "-v", "quiet", "-nostdin",
+        ffmpeg_bin, "-v", "quiet", "-nostdin",
         "-i", filepath_a,
         "-f", canonical_fmt,
         "-"
     ]
     cmd_b = [
-        "ffmpeg", "-v", "quiet", "-nostdin",
+        ffmpeg_bin, "-v", "quiet", "-nostdin",
         "-i", filepath_b,
         "-f", canonical_fmt,
         "-"
@@ -354,6 +363,7 @@ def verify_full_normalized_pcm_match(
     startupinfo = _get_low_priority_startupinfo() if sys.platform == "win32" else None
     proc_a = None
     proc_b = None
+    readers = []
 
     try:
         proc_a = subprocess.Popen(
@@ -372,27 +382,52 @@ def verify_full_normalized_pcm_match(
         _set_subprocess_low_priority(proc_a)
         _set_subprocess_low_priority(proc_b)
 
-        total_read = 0
+        # Each reader hashes its complete stream without buffering the audio.
+        # The coordinator remains responsive even when an OS pipe read stalls.
+        started = time.monotonic()
+        activity = [started, started]
+        complete = [threading.Event(), threading.Event()]
+        digests = [None, None]
+        sizes = [0, 0]
+        failures = []
+
+        def read_stream(index, proc):
+            digest = hashlib.sha256()
+            try:
+                read = getattr(proc.stdout, "read1", proc.stdout.read)
+                while True:
+                    chunk = read(chunk_size)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    sizes[index] += len(chunk)
+                    activity[index] = time.monotonic()
+                digests[index] = digest.digest()
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                complete[index].set()
+
+        for index, proc in enumerate((proc_a, proc_b)):
+            reader = threading.Thread(target=read_stream, args=(index, proc), daemon=True)
+            readers.append(reader)
+            reader.start()
         while True:
-            chunk_a = proc_a.stdout.read(chunk_size)
-            chunk_b = proc_b.stdout.read(chunk_size)
-
-            if chunk_a != chunk_b:
+            now = time.monotonic()
+            if failures or (is_cancelled and is_cancelled()):
                 return False
-
-            if not chunk_a:  # Both reached EOF simultaneously
+            if now - started >= total_timeout:
+                return False
+            if any(not complete[i].is_set() and now - activity[i] >= stall_timeout for i in (0, 1)):
+                return False
+            if all(event.is_set() for event in complete):
                 break
-
-            total_read += len(chunk_a)
-
-        # Disallow empty decoded streams
-        if total_read == 0:
+            time.sleep(0.02)
+        if failures or not sizes[0] or sizes[0] != sizes[1] or digests[0] != digests[1]:
             return False
-
-        # Confirm both FFmpeg processes finish cleanly without errors
         try:
-            ret_a = proc_a.wait(timeout=10.0)
-            ret_b = proc_b.wait(timeout=10.0)
+            ret_a = proc_a.wait(timeout=max(0.01, total_timeout - (time.monotonic() - started)))
+            ret_b = proc_b.wait(timeout=max(0.01, total_timeout - (time.monotonic() - started)))
             return ret_a == 0 and ret_b == 0
         except subprocess.TimeoutExpired:
             return False
@@ -403,6 +438,8 @@ def verify_full_normalized_pcm_match(
         for p in (proc_a, proc_b):
             if p is not None:
                 terminate_process_tree(p)
+        for reader in readers:
+            reader.join(timeout=1.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

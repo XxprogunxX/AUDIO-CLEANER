@@ -8,7 +8,7 @@ Exact matches destined for auto-delete must re-validate the full SHA-256 hash.
 
 import os
 import hashlib
-from typing import Optional
+from typing import Optional, Any, Tuple
 
 
 def compute_quick_signature(filepath: str, block_size: int = 4096) -> str:
@@ -98,3 +98,86 @@ def verify_authoritative_sha256_before_destructive_action(filepath: str, claimed
         return hasher.hexdigest() == claimed_sha256
     except Exception:
         return False
+
+
+def compute_current_file_sha256(filepath: str) -> str:
+    """Computes fresh byte-by-byte SHA-256 hash of a file on disk."""
+    if not filepath or not os.path.isfile(filepath):
+        return ""
+    try:
+        hasher = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception:
+        return ""
+
+
+def revalidate_destructive_action(
+    duplicate_type: Any,
+    track_to_delete: Any,
+    retained_track: Optional[Any] = None
+) -> tuple[bool, str]:
+    """
+    Authoritative destructive revalidation firewall before delete or trash.
+    
+    EXACT_HASH:
+      - Recalculates current SHA-256 of both files on disk.
+      - Confirms neither file changed since initial scan.
+      - Strictly requires current_del_sha256 == current_ret_sha256.
+      
+    EXACT_AUDIO:
+      - Does NOT require binary SHA-256 equality between track_to_delete and retained_track
+        (e.g., FLAC vs WAV have different container hashes but identical PCM).
+      - Verifies that neither file changed since scan (curr == analyzed_sha256).
+      - Revalidates information-preserving canonical PCM match on disk.
+    """
+    del_path = getattr(track_to_delete, "filepath", str(track_to_delete))
+    if not del_path or not os.path.isfile(del_path):
+        return False, f"Archivo a eliminar no encontrado en disco: {del_path}"
+
+    curr_del_hash = compute_current_file_sha256(del_path)
+    if not curr_del_hash:
+        return False, f"No fue posible calcular hash SHA-256 actual de {del_path}"
+
+    del_analyzed_hash = getattr(track_to_delete, "sha256", None)
+    if del_analyzed_hash and curr_del_hash != del_analyzed_hash:
+        return False, f"El archivo a eliminar fue modificado en disco tras el escaneo (SHA-256 cambió)"
+
+    if retained_track is None:
+        return True, "Revalidación de archivo individual aprobada"
+
+    ret_path = getattr(retained_track, "filepath", str(retained_track))
+    if not ret_path or not os.path.isfile(ret_path):
+        return False, f"Archivo conservado no encontrado en disco: {ret_path}"
+
+    curr_ret_hash = compute_current_file_sha256(ret_path)
+    if not curr_ret_hash:
+        return False, f"No fue posible calcular hash SHA-256 actual de {ret_path}"
+
+    ret_analyzed_hash = getattr(retained_track, "sha256", None)
+    if ret_analyzed_hash and curr_ret_hash != ret_analyzed_hash:
+        return False, f"El archivo conservado fue modificado en disco tras el escaneo (SHA-256 cambió)"
+
+    type_str = getattr(duplicate_type, "value", str(duplicate_type))
+
+    if type_str == "EXACT_HASH":
+        if curr_del_hash != curr_ret_hash:
+            return False, f"Fallo EXACT_HASH: Los hashes SHA-256 actuales no coinciden ({curr_del_hash[:8]} != {curr_ret_hash[:8]})"
+        return True, "Revalidación EXACT_HASH aprobada: hashes binarios actuales idénticos"
+
+    elif type_str == "EXACT_AUDIO":
+        # NO exigir que coincidan los hashes binarios SHA-256 entre sí (ej. FLAC vs WAV)
+        # Revalidar preservación estricta de PCM
+        try:
+            from core.fingerprint import verify_full_normalized_pcm_match
+            pcm_match = verify_full_normalized_pcm_match(del_path, ret_path)
+            if not pcm_match:
+                return False, "Fallo EXACT_AUDIO: La verificación PCM canónica en caliente falló"
+            return True, "Revalidación EXACT_AUDIO aprobada: PCM canónico idéntico verificado (hashes binarios independientes)"
+        except Exception as e:
+            return False, f"Error durante la revalidación PCM de EXACT_AUDIO: {e}"
+
+    return True, f"Revalidación de integridad aprobada para tipo {type_str}"
+

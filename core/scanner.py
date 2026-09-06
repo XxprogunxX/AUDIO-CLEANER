@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import itertools
+import logging
 import threading
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from typing import List, Optional, Callable, Dict, Any
@@ -236,6 +237,11 @@ class AudioScanner:
         self._stop_event.set()
         self._pause_event.set()
         self.stats.is_running = False
+        self.stats.is_cancelled = True
+
+    def cancel(self):
+        """Cancels the scan cooperatively."""
+        self.stop()
 
     def is_cancelled(self) -> bool:
         return self._stop_event.is_set()
@@ -256,6 +262,7 @@ class AudioScanner:
 
         # Snapshot configuration at scan start to guarantee immutability (Phase B / AC-006)
         scan_config = self.detection_config
+        analysis_signature = f"v2:min={float(scan_config.min_duration)}:spectral={scan_config.spectral_analysis}"
 
         if progress_callback:
             progress_callback(self.stats)
@@ -263,7 +270,12 @@ class AudioScanner:
         # 1. Discover all audio files
         discovered_files: List[str] = []
         last_walk_update = time.time()
-        for root, _, files in os.walk(folder_path):
+        def discovery_error(error):
+            self.stats.files_failed += 1
+            self.stats.is_complete = False
+            logging.getLogger(__name__).warning("Directory inaccessible: %s", error)
+
+        for root, _, files in os.walk(folder_path, onerror=discovery_error):
             if self._stop_event.is_set():
                 break
             for f in files:
@@ -286,6 +298,8 @@ class AudioScanner:
             progress_callback(self.stats)
 
         if not discovered_files or self._stop_event.is_set():
+            if self._stop_event.is_set():
+                self.stats.is_cancelled = True
             self.stats.is_running = False
             return []
 
@@ -296,6 +310,7 @@ class AudioScanner:
         all_tracks: List[AudioTrack] = []
         
         cached_map = self.db.get_lightweight_cache_lookup_v2()
+        analysis_cache = self.db.get_analysis_cache_lookup()
         total_discovered = len(discovered_files)
 
         cached_paths_to_load: List[str] = []
@@ -307,7 +322,7 @@ class AudioScanner:
                 stat = os.stat(fpath)
                 cached = cached_map.get(fpath)
                 curr_mtime_ns = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
-                if cached and cached[0] == stat.st_size and cached[1] == curr_mtime_ns:
+                if cached and cached[0] == stat.st_size and cached[1] == curr_mtime_ns and analysis_cache.get(fpath) == analysis_signature:
                     stored_sig = cached[2] if len(cached) > 2 else ""
                     if stored_sig:
                         curr_sig = compute_quick_signature(fpath)
@@ -364,11 +379,12 @@ class AudioScanner:
                     self._pause_event.wait()
 
                     if self._stop_event.is_set():
+                        self.stats.is_cancelled = True
                         executor.shutdown(wait=False, cancel_futures=True)
                         break
 
                     # Wait for next completed future
-                    done, _ = wait(futures.keys(), return_when=FIRST_COMPLETED)
+                    done, _ = wait(futures.keys(), timeout=0.2, return_when=FIRST_COMPLETED)
                     for future in done:
                         path = futures.pop(future)
                         self.stats.current_file = os.path.basename(path)
@@ -378,7 +394,6 @@ class AudioScanner:
                                 res = future.result()
                             except Exception as worker_err:
                                 logging.getLogger(__name__).warning("Worker failed processing %s: %s", path, worker_err)
-                                self.stats.files_failed += 1
                                 self.stats.is_complete = False
                                 self.stats.is_approximate = True
                                 res = None
@@ -389,6 +404,7 @@ class AudioScanner:
                                     mtime=res["mtime"],
                                     mtime_ns=res.get("mtime_ns", int(res["mtime"] * 1_000_000_000)),
                                     quick_signature=res.get("quick_signature", ""),
+                                    analysis_signature=analysis_signature,
                                     sha256=res["sha256"],
                                     audio_hash=res["audio_hash"],
                                     duration=res["duration"],
@@ -480,6 +496,24 @@ class AudioScanner:
             config=scan_config
         )
 
+        # Propagate coverage before presenting results in either client.
+        coverage = getattr(groups, "coverage", None)
+        if coverage is not None:
+            for name in ("candidate_pairs_generated", "candidate_pairs_retained",
+                         "candidate_pairs_dropped", "oversized_buckets", "worker_failures"):
+                setattr(self.stats, name, getattr(coverage, name))
+            self.stats.is_complete = self.stats.is_complete and coverage.is_complete
+            self.stats.is_approximate = self.stats.is_approximate or coverage.is_approximate
+            self.stats.is_cancelled = coverage.scan_status == "CANCELLED"
+        if self.stats.files_failed:
+            self.stats.is_complete = False
+        if self._stop_event.is_set() or self.stats.is_cancelled:
+            self.stats.is_running = False
+            self.stats.is_cancelled = True
+            self.stats.is_complete = False
+            self.stats.phase = "Cancelado"
+            return []
+
         # 5. Summarize Statistics
         self.stats.progress_ratio = 1.0
         self.stats.total_groups_count = len(groups)
@@ -489,7 +523,7 @@ class AudioScanner:
         self.stats.potential_space_saving = sum(g.space_saving_bytes for g in groups)
         self.stats.elapsed_seconds = time.time() - start_time
         self.stats.is_running = False
-        self.stats.phase = "Completado"
+        self.stats.phase = "Completado" if self.stats.is_complete else "Completado con cobertura incompleta"
 
         if progress_callback:
             progress_callback(self.stats)

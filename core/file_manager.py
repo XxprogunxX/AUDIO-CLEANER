@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Callable, Dict, Any
-from core.models import DuplicateGroup, AudioTrack, FileAction, prune_duplicate_groups
+from core.models import DuplicateGroup, AudioTrack, FileAction, DuplicateType, prune_duplicate_groups
 from core.database import Database
 
 
@@ -394,6 +394,23 @@ class FileOperationService:
                         failed += 1
                         continue
 
+                    if group.primary_type == DuplicateType.ACOUSTIC_DUPLICATE and not group.requires_manual_review:
+                        proven = {frozenset(p) for p in group.verified_pairs}
+                        verified_retained = [t for t in retained_tracks
+                            if frozenset((track.filepath, t.filepath)) in proven and os.path.isfile(t.filepath)]
+                        if not verified_retained:
+                            blocked += 1
+                            logs.append(f"Sin evidencia directa con la copia conservada: {track.filename}. Reescanee o revise el grupo.")
+                            continue
+
+                        primary_retained = verified_retained[0]
+                    else:
+                        primary_retained = next((t for t in retained_tracks if os.path.isfile(t.filepath)), None)
+                    if primary_retained is None:
+                        blocked += 1
+                        logs.append(f"No hay una copia conservada accesible para {track.filename}.")
+                        continue
+
                     # Hook desacoplado (ej. para detener reproducción antes de borrar en Windows)
                     if pre_operation_hook is not None:
                         try:
@@ -411,6 +428,20 @@ class FileOperationService:
                             candidate_path = os.path.join(destination_folder, f"{base_name}_{counter}{ext}")
                             counter += 1
                         resolved_target_path = candidate_path
+
+                    # Revalidación autoritativa en disco previa a cualquier acción destructiva
+                    if mode in ("trash", "permanent"):
+                        from core.cache_signature import revalidate_destructive_action
+                        is_reval_ok, reval_msg = revalidate_destructive_action(
+                            group.primary_type,
+                            track,
+                            primary_retained
+                        )
+                        if not is_reval_ok:
+                            logs.append(f"Seguridad destructiva: Operación bloqueada para {track.filename}: {reval_msg}")
+                            failed += 1
+                            blocked += 1
+                            continue
 
                     op_id = str(uuid.uuid4())
                     # Fail-closed journal: debe registrar PENDING de forma duradera antes de tocar filesystem

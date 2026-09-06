@@ -1,3 +1,4 @@
+from tests.group_fixtures import with_pair_evidence
 """
 Regression and validation suite for Phase A (Safety and Consistency):
 - AC-001: EXACT_AUDIO is strictly information-preserving (channels, sample rate, bit depth, ffprobe validation).
@@ -249,13 +250,13 @@ class TestPhaseASafety(unittest.TestCase):
         t_keep = AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP)
         t_del = AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_PROTECTED",
             primary_type=DuplicateType.POSSIBLE_DUPLICATE,
             tracks=[t_keep, t_del],
             best_track_path=f_keep,
             requires_manual_review=True
-        )
+        ))
 
         # Call with default allow_manual_review_bypass=False
         result = FileOperationService.delete_permanently([group], db=self.db, journal_path=self.journal_path)
@@ -276,13 +277,13 @@ class TestPhaseASafety(unittest.TestCase):
         t_keep = AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP)
         t_del = AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_AUTHORIZED",
             primary_type=DuplicateType.POSSIBLE_DUPLICATE,
             tracks=[t_keep, t_del],
             best_track_path=f_keep,
             requires_manual_review=True
-        )
+        ))
 
         result = FileOperationService.delete_permanently(
             [group],
@@ -310,13 +311,13 @@ class TestPhaseASafety(unittest.TestCase):
         t_keep = AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP)
         t_del = AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_PARTIAL",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t_keep, t_del],
             best_track_path=f_keep,
             requires_manual_review=False
-        )
+        ))
 
         # Mock database that fails on delete_track
         mock_db = MagicMock()
@@ -403,12 +404,12 @@ class TestPhaseASafety(unittest.TestCase):
         t_keep = AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP)
         t_del = AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_JW_FAIL",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t_keep, t_del],
             best_track_path=f_keep
-        )
+        ))
 
         with patch.object(OperationJournal, "record_pending", side_effect=JournalError("Simulated disk error")):
             result = FileOperationService.delete_permanently([group], db=self.db, journal_path=self.journal_path)
@@ -428,12 +429,12 @@ class TestPhaseASafety(unittest.TestCase):
         t_keep = AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP)
         t_del = AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             group_id="G_JI_FAIL",
             primary_type=DuplicateType.ACOUSTIC_DUPLICATE,
             tracks=[t_keep, t_del],
             best_track_path=f_keep
-        )
+        ))
 
         with patch.object(OperationJournal, "__init__", side_effect=JournalError("Cannot open SQLite journal")):
             result = FileOperationService.delete_permanently([group], db=self.db, journal_path=self.journal_path)
@@ -555,7 +556,7 @@ class TestPhaseASafety(unittest.TestCase):
 
         t_keep = AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP)
         t_del = AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)
-        group = DuplicateGroup("G_GUI", DuplicateType.ACOUSTIC_DUPLICATE, [t_keep, t_del], best_track_path=f_keep)
+        group = with_pair_evidence(DuplicateGroup("G_GUI", DuplicateType.ACOUSTIC_DUPLICATE, [t_keep, t_del], best_track_path=f_keep))
 
         expected_res = OperationResult(
             success=1,
@@ -589,7 +590,7 @@ class TestPhaseASafety(unittest.TestCase):
         t_good = AudioTrack(filepath=f_del_good, filesize=10, action=FileAction.DELETE)
         t_bad = AudioTrack(filepath=f_del_missing, filesize=10, action=FileAction.DELETE)
 
-        group = DuplicateGroup("G_MIX", DuplicateType.ACOUSTIC_DUPLICATE, [t_keep, t_good, t_bad], best_track_path=f_keep)
+        group = with_pair_evidence(DuplicateGroup("G_MIX", DuplicateType.ACOUSTIC_DUPLICATE, [t_keep, t_good, t_bad], best_track_path=f_keep))
         result = FileOperationService.delete_permanently([group], db=self.db, journal_path=self.journal_path)
 
         self.assertEqual(result.success, 1)
@@ -606,16 +607,16 @@ class TestPhaseASafety(unittest.TestCase):
         for f in (f1_keep, f1_del, f2_keep, f2_del):
             with open(f, "wb") as fp: fp.write(b"audio")
 
-        g1 = DuplicateGroup(
+        g1 = with_pair_evidence(DuplicateGroup(
             "G1_OK", DuplicateType.ACOUSTIC_DUPLICATE,
             [AudioTrack(filepath=f1_keep, filesize=10, action=FileAction.KEEP), AudioTrack(filepath=f1_del, filesize=10, action=FileAction.DELETE)],
             best_track_path=f1_keep, requires_manual_review=False
-        )
-        g2 = DuplicateGroup(
+        ))
+        g2 = with_pair_evidence(DuplicateGroup(
             "G2_BLK", DuplicateType.POSSIBLE_DUPLICATE,
             [AudioTrack(filepath=f2_keep, filesize=10, action=FileAction.KEEP), AudioTrack(filepath=f2_del, filesize=10, action=FileAction.DELETE)],
             best_track_path=f2_keep, requires_manual_review=True
-        )
+        ))
 
         result = FileOperationService.delete_permanently([g1, g2], db=self.db, allow_manual_review_bypass=False, journal_path=self.journal_path)
 
@@ -637,11 +638,11 @@ class TestPhaseASafety(unittest.TestCase):
         with open(f_keep, "wb") as f: f.write(b"keep")
         with open(f_source, "wb") as f: f.write(b"new track to backup")
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             "G_COLLISION", DuplicateType.ACOUSTIC_DUPLICATE,
             [AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP), AudioTrack(filepath=f_source, filesize=10, action=FileAction.DELETE)],
             best_track_path=f_keep
-        )
+        ))
 
         result = FileOperationService.backup([group], destination_folder=backup_dir, db=self.db, journal_path=self.journal_path)
 
@@ -659,7 +660,7 @@ class TestPhaseASafety(unittest.TestCase):
         """When all tracks in a group are UNSET, space_saving_bytes must be strictly 0."""
         t1 = AudioTrack(filepath="t1.mp3", filesize=5000, action=FileAction.UNSET)
         t2 = AudioTrack(filepath="t2.mp3", filesize=6000, action=FileAction.UNSET)
-        group = DuplicateGroup("G_UNSET", DuplicateType.POSSIBLE_DUPLICATE, [t1, t2], best_track_path="t1.mp3")
+        group = with_pair_evidence(DuplicateGroup("G_UNSET", DuplicateType.POSSIBLE_DUPLICATE, [t1, t2], best_track_path="t1.mp3"))
         saving = group.recalculate_space_saving()
         self.assertEqual(saving, 0)
         self.assertEqual(group.space_saving_bytes, 0)
@@ -671,11 +672,11 @@ class TestPhaseASafety(unittest.TestCase):
         with open(f_keep, "wb") as f: f.write(b"keep")
         with open(f_del, "wb") as f: f.write(b"del")
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             "G_OPF", DuplicateType.ACOUSTIC_DUPLICATE,
             [AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP), AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)],
             best_track_path=f_keep
-        )
+        ))
 
         mock_db = MagicMock()
         mock_db.delete_track.side_effect = sqlite3.OperationalError("db locked")
@@ -694,11 +695,11 @@ class TestPhaseASafety(unittest.TestCase):
 
         self.db.upsert_track(AudioTrack(filepath=f_del, filesize=10))
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             "G_JFAIL", DuplicateType.ACOUSTIC_DUPLICATE,
             [AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP), AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)],
             best_track_path=f_keep
-        )
+        ))
 
         orig_update = OperationJournal.update_state
         def fail_on_fs_done(self_obj, op_id, state):
@@ -726,11 +727,11 @@ class TestPhaseASafety(unittest.TestCase):
 
         self.db.upsert_track(AudioTrack(filepath=f_del, filesize=10))
 
-        group = DuplicateGroup(
+        group = with_pair_evidence(DuplicateGroup(
             "G_COMP_FAIL", DuplicateType.ACOUSTIC_DUPLICATE,
             [AudioTrack(filepath=f_keep, filesize=10, action=FileAction.KEEP), AudioTrack(filepath=f_del, filesize=10, action=FileAction.DELETE)],
             best_track_path=f_keep
-        )
+        ))
 
         orig_update = OperationJournal.update_state
         def fail_on_completed(self_obj, op_id, state):

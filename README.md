@@ -273,7 +273,7 @@ Este `.exe` es completamente autónomo y puede distribuirse en cualquier PC con 
 
 ## 🧪 Suite de Pruebas Automatizadas
 
-El proyecto cuenta con una suite exhaustiva de **190 pruebas automatizadas** (0 errores, 0 fallos, 0 omitidos) que valida de extremo a extremo la integridad matemática, seguridad de borrado, concurrencia y persistencia:
+El proyecto cuenta con una suite exhaustiva de **195 pruebas automatizadas** (0 errores, 0 fallos, 0 omitidos) que valida de extremo a extremo la integridad matemática, seguridad de borrado, concurrencia, revalidación autoritativa previa a borrado destructivo y persistencia:
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
@@ -292,10 +292,10 @@ python -m unittest discover -s tests -p "test_*.py"
 - **Fase D — Persistencia, SQLite Seguro y GUI (27 pruebas)**:
   - Guardado atómico de sesiones con backup (`last_session.json` + `last_session.json.bak`).
   - Timeout de cierre seguro en `ScannerWorker` (`wait(5000)`); aborta el cierre de ventana si el hilo sigue activo para no corromper SQLite.
-- **Fase E — Escalabilidad, Streaming Robusto y Packaging (35 pruebas)**:
+- **Fase E — Escalabilidad, Streaming Robusto, Packaging y RC1 (40 pruebas)**:
   - Runner FFmpeg con drenaje concurrente no bloqueante de `stdout` y `stderr` (prevención de deadlocks por contrapresión de pipes).
   - Cancelación cooperativa de workers en `ProcessPoolExecutor`.
-  - Firma rápida de 12 KB (`quick_signature`) para invalidación de caché, con revalidación criptográfica SHA-256 obligatoria antes de acciones destructivas.
+  - Firma rápida de 12 KB (`quick_signature`) para invalidación de caché, con revalidación criptográfica SHA-256 autoritativa obligatoria en disco previa a cualquier acción destructiva (`EXACT_HASH` y `EXACT_AUDIO`).
   - Migración SQLite aditiva e idempotente (`PRAGMA table_info` y `ALTER TABLE` seguro preservando datos existentes).
   - Generación bounded de candidatos durante la ingesta streaming con memoria acotada.
 
@@ -314,6 +314,7 @@ python -m unittest discover -s tests -p "test_*.py"
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1,000** | B (Disperso realista) | **1.41 s** | 191.0 MB | 556 | 556 | No (`False`) | **100.0%** | 100.0% |
 | **1,000** | D (Adversarial, alta colisión) | **36.62 s** | 243.1 MB | 124,750 | 124,750 | Sí (`True`, 11 buckets) | N/A | N/A |
+| **5,000** | D (Adversarial, alta colisión) | **31.75 s** | 335.2 MB | 124,750 | 124,750 | Sí (`True`, 11 buckets) | N/A | N/A |
 | **100,000** | B (Disperso realista, 5% clústeres) | **97.53 s** | 2,584.6 MB | 55,110 | 55,110 | No (`False`) | **100.0%** | 100.0% |
 
 ## 📂 Estructura del Proyecto
@@ -392,3 +393,10 @@ Detector-de-huellas-dactilares-ac-stico-y-duplicado-de-audio/
 ## 📄 Licencia
 
 Este proyecto está bajo la Licencia MIT. Para más información, consulta el archivo `LICENSE`.
+
+
+## Correcciones de auditoría y validación
+
+La revisión de septiembre de 2026 refuerza la selección segura de duplicados, la comparación PCM, la cobertura del escaneo, la caché y las sesiones. Consulta [AUDIT_FIXES.md](AUDIT_FIXES.md) para los cambios, pruebas, requisitos de compilación y límites operativos.
+
+Para validar el proyecto con datos temporales: `python scripts/validate_project.py`. Para comprobar la distribución compilada: `python scripts/check_exe_binaries.py` y `python scripts/smoke_release.py --exe dist/AudioDuplicateDetector.exe`.

@@ -85,16 +85,13 @@ El cierre de la interfaz gráfica invocaba `worker.wait(5000)` sin inspeccionar 
 ## 3. Resultados de Pruebas Automatizadas
 
 La suite completa del repositorio fue ejecutada de extremo a extremo:
-```bash
-python -m unittest discover -s tests -p "test_*.py"
-```
 
 ### Resumen de Ejecución:
-- **Total de pruebas ejecutadas**: **190 tests**
+- **Total de pruebas ejecutadas**: **195 tests**
 - **Fallos**: **0**
 - **Errores**: **0**
 - **Omitidos**: **0**
-- **Tiempo total**: **48.72 segundos**
+- **Tiempo total**: **47.47 segundos**
 - **Estado**: **OK**
 
 ### Desglose por Módulos:
@@ -104,7 +101,7 @@ python -m unittest discover -s tests -p "test_*.py"
 | `tests/test_phase_b_config.py` | 23 | Inmutabilidad de `DetectionConfig`, validación de umbrales y settings atómicos | **PASS** |
 | `tests/test_phase_c_spectral.py` | 26 | `SpectralAssessment`, FFT multicanal sin downmix forzado, Nyquist 32 kHz | **PASS** |
 | `tests/test_phase_d_persistence_gui.py` | 27 | Persistencia SQLite WAL, Microajuste D, sesiones atómicas, escape SQL | **PASS** |
-| `tests/test_phase_e_scalability.py` | 35 | Drenaje FFmpeg, cancelación cooperativa, quick signature, migración SQLite, streaming bounded | **PASS** |
+| `tests/test_phase_e_scalability.py` | 40 | Drenaje FFmpeg, cancelación cooperativa, quick signature, migración SQLite, streaming bounded, revalidación autoritativa en disco | **PASS** |
 | `tests/test_clustering.py` | 7 | Prefiltro LSH, heurística `has_weak_link`, Union-Find Disjoint-Set | **PASS** |
 | `tests/test_comparator.py` | 10 | Alineamiento Hamming, distancia de bits, ventana temporal de offset | **PASS** |
 | `tests/test_database.py` | 8 | Operaciones CRUD SQLite, transacciones, atomicidad | **PASS** |
@@ -114,7 +111,7 @@ python -m unittest discover -s tests -p "test_*.py"
 | `tests/test_framework.py` | 2 | Framework de evaluación adversarial y dataset sintético | **PASS** |
 | `tests/test_performance.py` | 1 | Estrés de rendimiento de comparaciones vectorizadas NumPy | **PASS** |
 | `tests/test_quality.py` | 3 | Detección espectral de cortes FFT y scoring de calidad técnica | **PASS** |
-| **TOTAL** | **190** | **Suite Completa de Regresión** | **100% PASS** |
+| **TOTAL** | **195** | **Suite Completa de Regresión** | **100% PASS** |
 
 ---
 
@@ -134,15 +131,61 @@ python -m unittest discover -s tests -p "test_*.py"
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1,000** | B (Disperso realista) | **1.41 s** | 191.0 MB | 556 | 556 | `False` | **100.0%** | 100.0% |
 | **1,000** | D (Adversarial, colisión masiva) | **36.62 s** | 243.1 MB | 124,750 | 124,750 | `True` (11 buckets acotados) | N/A | N/A |
+| **5,000** | D (Adversarial, colisión masiva) | **31.75 s** | 335.2 MB | 124,750 | 124,750 | `True` (11 buckets acotados) | N/A | N/A |
 | **100,000** | B (Disperso realista, 5% clústeres) | **97.53 s** | 2,584.6 MB | 55,110 | 55,110 | `False` | **100.0%** | 100.0% |
-
-### Conclusiones del Benchmark:
-1. **Candidate Recall en Gran Escala**: 100.0% de recuperación de los clústeres duplicados existentes en una biblioteca de 100k pistas sintéticas.
-2. **Control de Memoria**: La ingesta bounded en streaming y el tope de buckets sobredimensionados previenen picos descontrolados de RAM, manteniendo el proceso completo en ~2.5 GB incluso con 100,000 pistas indexadas concurrentemente.
 
 ---
 
-## 5. Estado del Release
+## 5. Validación de Smoke Test con Archivos Reales en Disco
 
-- Cumpliendo estrictamente las directrices del usuario: **NO se ha etiquetado la versión 1.0 ni se ha creado ningún release**.
+Se ejecutó un escaneo físico de biblioteca real mediante `scripts/smoke_test_real_library.py`:
+- **Biblioteca de Prueba**: 103 archivos de audio reales estructurados en 6 subcarpetas (`classical/`, `electronic/`, `rock_pop/`, `podcasts/`, `duplicates_exact/`, `edge_cases/`).
+- **Casos Borde Incluidos**: Nombres con caracteres Unicode complejos (`música_española_ñ_á.mp3`), emparejamientos PCM FLAC vs WAV con cabeceras divergentes, duplicados binarios idénticos, archivos ultracortos de 0.2s y archivos corruptos/truncados.
+- **Resultados Observados**:
+  - **Archivos descubiertos en disco**: 103
+  - **Archivos procesados**: 103
+  - **Archivos fallidos**: 0
+  - **Grupos detectados**: 3 (2 `EXACT_HASH`, 1 `EXACT_AUDIO`)
+  - **Tiempo de ejecución**: 13.29 segundos
+  - **Peak RSS (Process Tree)**: 274.10 MB
+  - **Poda acotada (`is_approximate`)**: `False`
+  - **Resultado**: **100% SUCCESS**
+
+---
+
+## 6. Validación de Migración SQLite de Esquemas Heredados
+
+Se ejecutó `scripts/validate_old_database_migration.py`:
+- **Esquema Inicial**: Base de datos SQLite pura pre-Fase E (14 columnas, sin `mtime_ns` ni `quick_signature`) con 5 pistas históricas registradas.
+- **Primer Acceso con Motor Actual**:
+  - Inspección dinámica con `PRAGMA table_info(tracks)`.
+  - Migración aditiva mediante `ALTER TABLE ADD COLUMN` para `mtime_ns` y `quick_signature`.
+  - Las 5 pistas históricas se preservaron intactas con todos sus metadatos.
+- **Segundo Acceso (Idempotencia)**:
+  - Sin duplicación de columnas ni fallos de esquema.
+  - Búsqueda y consulta de pistas operativas al 100%.
+- **Resultado**: **PASS**
+
+---
+
+## 7. Verificación del Ejecutable Autónomo (Standalone Windows Build)
+
+- **Artefacto**: `dist\AudioDuplicateDetector.exe`
+- **Tamaño**: `86,275,618 bytes` (~82.28 MB)
+- **Hash SHA-256**: `e8b052693af39264a96424af4844e71681f5d0aa6f365082428798ef8d50a86d`
+- **Entorno de Compilación**: CPython 3.13.7 x64, PyInstaller 6.22.2, Windows 11.
+- **Binarios Empaquetados**: `bin/fpcalc.exe` integrado en el bundle sin dependencia de variables de entorno ni rutas fijas de desarrollo.
+- **Resolución de Binarios**: Verificada con prueba unitaria `test_packaged_app_does_not_depend_on_system_ffmpeg_path`.
+- **Smoke Test en Host Local**: Ejecución con `--help` y `--cli` exitosa con código de salida 0.
+- **Declaración de Clean-Machine**:
+  `Clean-machine smoke test: NOT EXECUTED` (Probado exhaustivamente en máquina host Windows 11 x64; no se ha desplegado en una máquina virtual o sandbox completamente virgen sin Python).
+
+---
+
+## 8. Estado del Release y Recomendación Final
+
+- **Recomendación Formal**: **`READY FOR RC1 ONLY`**
+- **Regla de Oro**: **NO se ha creado el tag `v1.0.0` ni se ha publicado ningún release en GitHub**, conforme a las instrucciones expresas del usuario.
+- **Designación de Versión**: **`1.0.0-rc1`**
+- El código se encuentra completamente probado, documentado y listo para pruebas de usuario final.
 - El proyecto se encuentra auditado, blindado y validado a nivel de código fuente y suite de pruebas.

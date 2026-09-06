@@ -30,7 +30,9 @@ from core.ffmpeg_runner import (
 from core.cache_signature import (
     compute_quick_signature,
     is_cache_valid,
-    verify_authoritative_sha256_before_destructive_action
+    verify_authoritative_sha256_before_destructive_action,
+    compute_current_file_sha256,
+    revalidate_destructive_action
 )
 from core.database import Database
 from core.scanner import AudioScanner, _process_audio_worker
@@ -556,6 +558,110 @@ class TestCandidateGenerationAndMemoryBounds(unittest.TestCase):
 
         groups = cluster_duplicates(tracks)
         self.assertEqual(len(groups), 5)
+
+
+class TestReleaseCandidateValidation(unittest.TestCase):
+    """Release Candidate 1 Validations: Authoritative revalidation, cancellation & packaged binaries."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_exact_audio_flac_wav_different_binary_hashes_can_remain_exact_audio(self):
+        """FLAC and WAV with different binary hashes can remain EXACT_AUDIO if PCM is identical."""
+        p_wav = os.path.join(self.temp_dir, "song.wav")
+        p_flac = os.path.join(self.temp_dir, "song.flac")
+        with open(p_wav, "wb") as f: f.write(b"RIFFWAVE_header_and_pcm_samples_12345")
+        with open(p_flac, "wb") as f: f.write(b"fLaC_header_and_same_pcm_compressed_99999")
+
+        t_wav = AudioTrack(filepath=p_wav, filesize=os.path.getsize(p_wav), sha256=compute_current_file_sha256(p_wav))
+        t_flac = AudioTrack(filepath=p_flac, filesize=os.path.getsize(p_flac), sha256=compute_current_file_sha256(p_flac))
+
+        self.assertNotEqual(t_wav.sha256, t_flac.sha256, "Binary container hashes must differ")
+
+        with patch("core.fingerprint.verify_full_normalized_pcm_match", return_value=True):
+            ok, msg = revalidate_destructive_action(DuplicateType.EXACT_AUDIO, t_wav, t_flac)
+            self.assertTrue(ok, f"EXACT_AUDIO must not require binary hash equality: {msg}")
+
+    def test_exact_audio_destructive_revalidation_detects_changed_source(self):
+        """If a file was modified on disk since analysis, destructive revalidation aborts deletion."""
+        p_wav = os.path.join(self.temp_dir, "orig.wav")
+        p_flac = os.path.join(self.temp_dir, "orig.flac")
+        with open(p_wav, "wb") as f: f.write(b"initial_wav_content")
+        with open(p_flac, "wb") as f: f.write(b"initial_flac_content")
+
+        t_wav = AudioTrack(filepath=p_wav, filesize=os.path.getsize(p_wav), sha256=compute_current_file_sha256(p_wav))
+        t_flac = AudioTrack(filepath=p_flac, filesize=os.path.getsize(p_flac), sha256=compute_current_file_sha256(p_flac))
+
+        # External process modifies WAV on disk
+        with open(p_wav, "wb") as f: f.write(b"corrupted_or_replaced_audio_content")
+
+        with patch("core.fingerprint.verify_full_normalized_pcm_match", return_value=True):
+            ok, msg = revalidate_destructive_action(DuplicateType.EXACT_AUDIO, t_wav, t_flac)
+            self.assertFalse(ok)
+            self.assertIn("modificado en disco", msg)
+
+    def test_exact_hash_destructive_revalidation_requires_current_hash_match(self):
+        """EXACT_HASH strictly enforces current binary hash equality and detects changed source."""
+        p_a = os.path.join(self.temp_dir, "track_a.mp3")
+        p_b = os.path.join(self.temp_dir, "track_b.mp3")
+        with open(p_a, "wb") as f: f.write(b"identical_mp3_stream")
+        with open(p_b, "wb") as f: f.write(b"identical_mp3_stream")
+
+        t_a = AudioTrack(filepath=p_a, filesize=os.path.getsize(p_a), sha256=compute_current_file_sha256(p_a))
+        t_b = AudioTrack(filepath=p_b, filesize=os.path.getsize(p_b), sha256=compute_current_file_sha256(p_b))
+
+        # Initial validation passes
+        ok, msg = revalidate_destructive_action(DuplicateType.EXACT_HASH, t_a, t_b)
+        self.assertTrue(ok)
+
+        # External modification
+        with open(p_a, "wb") as f: f.write(b"altered_stream")
+        ok_after, msg_after = revalidate_destructive_action(DuplicateType.EXACT_HASH, t_a, t_b)
+        self.assertFalse(ok_after)
+
+    def test_packaged_app_does_not_depend_on_system_ffmpeg_path(self):
+        """Binary resolver finds bundled tools even when system PATH has no ffmpeg."""
+        fake_bundle = os.path.join(self.temp_dir, "bundle_bin")
+        os.makedirs(fake_bundle, exist_ok=True)
+        fake_ffmpeg = os.path.join(fake_bundle, "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+        with open(fake_ffmpeg, "w") as f: f.write("binary")
+
+        from core.binary_resolver import resolve_binary_path
+        with patch.dict(os.environ, {"PATH": ""}):
+            with patch("sys._MEIPASS", fake_bundle, create=True):
+                found = resolve_binary_path("ffmpeg")
+                self.assertIsNotNone(found)
+                self.assertEqual(os.path.normpath(found), os.path.normpath(fake_ffmpeg))
+
+    def test_cancelled_scan_can_be_followed_by_new_scan(self):
+        """A cancelled scan shuts down cleanly and allows a subsequent scan to complete successfully."""
+        from core.scanner import AudioScanner
+        from core.database import Database
+
+        db_path = os.path.join(self.temp_dir, "test_lifecycle.db")
+        db = Database(db_path=db_path)
+        scanner = AudioScanner(db=db)
+
+        f1 = os.path.join(self.temp_dir, "scan1.flac")
+        f2 = os.path.join(self.temp_dir, "scan2.flac")
+        with open(f1, "wb") as f: f.write(b"dummy1")
+        with open(f2, "wb") as f: f.write(b"dummy2")
+
+        # 1. First scan cancelled during execution via progress callback
+        def cancel_on_discovery(stats):
+            scanner.cancel()
+
+        res1 = scanner.scan_directory(self.temp_dir, progress_callback=cancel_on_discovery)
+        self.assertTrue(scanner.stats.is_cancelled)
+
+        # 2. Subsequent scan executes to completion without errors
+        res2 = scanner.scan_directory(self.temp_dir)
+        self.assertFalse(scanner.stats.is_cancelled)
+        self.assertFalse(scanner.is_cancelled())
+        db.close()
 
 
 if __name__ == "__main__":

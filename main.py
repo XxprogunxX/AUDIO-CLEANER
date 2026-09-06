@@ -63,17 +63,13 @@ def main():
 def run_cli_mode(args):
     """Headless CLI execution for scripts or automated servers."""
     if not args.folder or not os.path.isdir(args.folder):
-        print("❌ Error: Debes especificar una carpeta válida con --folder <ruta>")
+        print("ERROR: Debes especificar una carpeta valida con --folder <ruta>")
         sys.exit(1)
 
     from core.scanner import AudioScanner
     from core.database import Database
     from core.file_manager import auto_apply_recommendations, move_marked_duplicates
-    from rich.console import Console
-    from rich.table import Table
-
-    console = Console()
-    console.print(f"[bold cyan]🎵 Iniciando análisis acústico en:[/] {args.folder}")
+    print(f">> Iniciando analisis acustico en: {args.folder}")
 
     db = Database(db_path=args.db)
     scanner = AudioScanner(db=db)
@@ -85,42 +81,32 @@ def run_cli_mode(args):
     groups = scanner.scan_directory(args.folder, progress_callback=cli_progress)
     print()
 
-    console.print(f"\n[bold green]✅ Escaneo finalizado en {scanner.stats.elapsed_seconds:.1f}s[/]")
-    console.print(f"Total archivos analizados: {scanner.stats.files_scanned}")
-    console.print(f"Duplicados exactos: [bold blue]{scanner.stats.exact_duplicates_count}[/]")
-    console.print(f"Duplicados acústicos: [bold green]{scanner.stats.acoustic_duplicates_count}[/]")
-    console.print(f"Posibles duplicados: [bold yellow]{scanner.stats.possible_duplicates_count}[/]")
+    print(f"\n>> Escaneo finalizado en {scanner.stats.elapsed_seconds:.1f}s")
+    if not scanner.stats.is_complete:
+        print(f"ADVERTENCIA: cobertura incompleta. Archivos fallidos: {scanner.stats.files_failed}; "
+              f"bloques fallidos: {scanner.stats.worker_failures}; "
+              f"coincidencias candidatas descartadas: {scanner.stats.candidate_pairs_dropped}.")
+    print(f"Total archivos analizados: {scanner.stats.files_scanned}")
+    print(f"Duplicados exactos: {scanner.stats.exact_duplicates_count}")
+    print(f"Duplicados acusticos: {scanner.stats.acoustic_duplicates_count}")
+    print(f"Posibles duplicados: {scanner.stats.possible_duplicates_count}")
     savings_mb = scanner.stats.potential_space_saving / (1024 * 1024)
-    console.print(f"Espacio recuperable: [bold magenta]{savings_mb:.2f} MB[/]\n")
+    print(f"Espacio recuperable: {savings_mb:.2f} MB\n")
 
     # Display Groups in Table
     for group in groups:
-        table = Table(title=f"Grupo {group.group_id} ({group.primary_type.value}) - Similitud: {group.average_similarity:.1f}%")
-        table.add_column("Acción", style="bold")
-        table.add_column("Archivo", style="white")
-        table.add_column("Formato", style="cyan")
-        table.add_column("Bitrate", style="green")
-        table.add_column("Duración", style="yellow")
-        table.add_column("Tamaño", style="magenta")
-        table.add_column("Calidad", style="white")
-
+        sep = "-" * 60
+        print(sep)
+        print(f"Grupo {group.group_id} ({group.primary_type.value}) - Similitud: {group.average_similarity:.1f}%")
+        print(sep)
         for track in group.tracks:
             is_best = (track.filepath == group.best_track_path)
             if getattr(group, "requires_manual_review", False):
-                action_tag = "[yellow]REVISAR[/]"
+                action_tag = "REVISAR"
             else:
-                action_tag = "[green]CONSERVAR[/]" if is_best else "[red]ELIMINAR[/]"
-            table.add_row(
-                action_tag,
-                track.filename,
-                track.format,
-                f"{track.bitrate}k",
-                track.formatted_duration,
-                track.formatted_size,
-                f"{track.quality_score}/100"
-            )
-        console.print(table)
-        console.print(f"[bold yellow]Recomendación:[/] {group.best_track_reason}\n")
+                action_tag = "CONSERVAR" if is_best else "ELIMINAR"
+            print(f"  [{action_tag}] {track.filename} | {track.format} | {track.bitrate}k | {track.formatted_duration} | {track.formatted_size} | Q:{track.quality_score}")
+        print(f"  Recomendacion: {group.best_track_reason}\n")
 
     if args.export_csv:
         import csv
@@ -139,16 +125,16 @@ def run_cli_mode(args):
                         track.format, track.bitrate, track.duration, track.filesize,
                         track.quality_score, group.best_track_reason if is_best else ""
                     ])
-        console.print(f"[bold green]✅ Resultados exportados a:[/] {args.export_csv}\n")
+        print(f">> Resultados exportados a: {args.export_csv}\n")
 
     if args.auto_move:
         if args.dry_run:
-            console.print(f"[bold yellow]DRY-RUN:[/] Se moverían los duplicados inferiores a: {args.auto_move}")
+            print(f"DRY-RUN: Se moverian los duplicados inferiores a: {args.auto_move}")
         else:
             auto_apply_recommendations(groups)
-            console.print(f"[bold cyan]Moviendo duplicados a:[/] {args.auto_move}")
+            print(f"Moviendo duplicados a: {args.auto_move}")
             success, failed, logs = move_marked_duplicates(groups, args.auto_move, db=db)
-            console.print(f"[bold green]Movidos con éxito: {success} archivos. Errores: {failed}[/]")
+            print(f"Movidos: {success} archivos. Errores: {failed}")
 
 
 if __name__ == "__main__":
