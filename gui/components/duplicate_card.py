@@ -204,7 +204,7 @@ class DuplicateGroupCard(QFrame):
         elif track.spectral_assessment == SpectralAssessment.NO_LOSSY_EVIDENCE:
             specs_text += f"<br><br><span style='color:{COLORS['success']}'>✓ Sin evidencia lossy detectada</span>"
         elif track.is_lossless:
-            specs_text += f"<br><br><span style='color:{COLORS['success']}'>✓ Lossless ({track.format})</span>"
+            specs_text += f"<br><br><span style='color:{COLORS['text_muted']}'>Contenedor lossless ({track.format}); análisis no concluyente</span>"
             
         lbl_specs = QLabel(specs_text)
         lbl_specs.setStyleSheet("border: none;")

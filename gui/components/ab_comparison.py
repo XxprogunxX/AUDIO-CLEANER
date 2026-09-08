@@ -2,7 +2,7 @@
 A/B Comparison View — Side-by-side spectral analysis panel (Figma Phase B).
 
 Shows two tracks with:
-  - Spectral cutoff visualization (colored bar chart by frequency band)
+  - Estimated cutoff indicator when measured spectral evidence exists
   - Technical specs table (format, bitrate, samplerate, bit_depth, quality score)
   - Playback controls per track
   - Fake lossless warning with cutoff frequency annotation
@@ -30,9 +30,8 @@ from gui.components.audio_player import AudioPlayer
 
 class SpectralBarsWidget(QWidget):
     """
-    Renders a simulated spectral view using the spectral_cutoff value.
-    Draws frequency bands from 20Hz to 22kHz in 20 bars.
-    Bars above the cutoff are grayed out (truncated by lossy encoding).
+    Renders a categorical cutoff indicator, not a measured spectrum.
+    Bands above the estimated cutoff are dimmed.
     """
     BANDS_HZ = [
         20, 50, 100, 200, 400, 800, 1200, 1600, 2000, 2500,
@@ -52,27 +51,13 @@ class SpectralBarsWidget(QWidget):
         self.label = label
         self._anim_tick = 0
         self._heights: list[float] = []
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(60)
         self.setMinimumHeight(140)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._generate_heights()
 
     def _generate_heights(self):
-        """Generate naturalistic-looking height profile."""
-        import random
-        random.seed(int(self.cutoff_hz) % 9999)
-        self._heights = []
-        for hz in self.BANDS_HZ:
-            if hz <= self.cutoff_hz:
-                # Active band: amplitude decreasing slightly toward high freq
-                ratio = 0.6 + 0.4 * (1.0 - hz / max(self.cutoff_hz, 1))
-                h = max(0.25, ratio + random.uniform(-0.12, 0.12))
-            else:
-                # Truncated band: nearly flat noise floor
-                h = random.uniform(0.02, 0.08)
-            self._heights.append(min(1.0, h))
+        """Generate fixed heights that encode only below/above-cutoff state."""
+        self._heights = [0.72 if hz <= self.cutoff_hz else 0.08 for hz in self.BANDS_HZ]
 
     def _tick(self):
         self._anim_tick += 1
@@ -91,11 +76,6 @@ class SpectralBarsWidget(QWidget):
 
         for i, hz in enumerate(self.BANDS_HZ):
             bar_h_ratio = self._heights[i]
-            # Subtle animation: only on active bands
-            if hz <= self.cutoff_hz:
-                wobble = math.sin(self._anim_tick * 0.08 + i * 0.4) * 0.04
-                bar_h_ratio = min(1.0, max(0.05, bar_h_ratio + wobble))
-
             bar_h = int(bar_h_ratio * h)
             x = x_start + i * (bar_w + gap)
             y = h - bar_h
@@ -215,14 +195,19 @@ class TrackPanel(QFrame):
         # ── Spectral bars ──────────────────────────────────────────
         is_fake = track.fake_lossless_confidence > 50.0
         panel_label = "FAKE LOSSLESS" if is_fake else ("LOSSLESS" if track.is_lossless else "LOSSY")
-        cutoff = track.spectral_cutoff if track.spectral_cutoff > 0 else 20000.0
-
-        spectral = SpectralBarsWidget(
-            cutoff_hz=cutoff,
-            is_fake=is_fake,
-            label=panel_label,
-        )
-        layout.addWidget(spectral)
+        cutoff = track.spectral_cutoff if track.spectral_cutoff > 0 else None
+        if cutoff is not None:
+            indicator_note = QLabel("Indicador del corte estimado; no representa amplitudes medidas")
+            indicator_note.setObjectName("muted")
+            indicator_note.setWordWrap(True)
+            layout.addWidget(indicator_note)
+            spectral = SpectralBarsWidget(cutoff_hz=cutoff, is_fake=is_fake, label=panel_label)
+            layout.addWidget(spectral)
+        else:
+            no_measurement = QLabel("Sin medición espectral disponible")
+            no_measurement.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            no_measurement.setStyleSheet(f"color: {COLORS['text_muted']}; padding: 28px;")
+            layout.addWidget(no_measurement)
 
         # Transcode warning badge / diagnostic (Phase C AC-005)
         from core.spectral_types import SpectralAssessment

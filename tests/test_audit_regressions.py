@@ -257,7 +257,7 @@ class TestVerifiedBackupRecovery(unittest.TestCase):
             self.assertTrue(delete.exists())
             self.assertEqual(list(destination.iterdir()), [])
 
-    def test_reconcile_rolls_back_artifacts_when_source_exists(self):
+    def test_reconcile_preserves_ambiguous_artifacts_when_source_exists(self):
         with tempfile.TemporaryDirectory() as folder:
             group, _, delete = self.make_group(folder)
             target, temporary = Path(folder)/'backup.wav', Path(folder)/'partial.tmp'
@@ -269,8 +269,8 @@ class TestVerifiedBackupRecovery(unittest.TestCase):
             journal.record_pending('op', str(delete), 'backup', str(target), str(temporary), digest)
             logs = journal.reconcile()
             self.assertTrue(delete.exists())
-            self.assertFalse(target.exists())
-            self.assertFalse(temporary.exists())
+            self.assertTrue(target.exists())
+            self.assertTrue(temporary.exists())
             self.assertEqual(self.journal_state(journal_path), 'ABORTED')
             self.assertTrue(logs)
 

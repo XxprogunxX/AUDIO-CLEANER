@@ -69,6 +69,38 @@ class DuplicateGroupList(list):
         self.coverage = coverage or ScanCoverageReport()
 
 
+def _fingerprint_candidate_tokens(raw_fingerprint, exact_limit: int = 600, fuzzy_limit: int = 150):
+    """Return bounded exact tokens plus tolerant hashes of short word windows."""
+    values = [int(value) & 0xFFFFFFFF for value in (raw_fingerprint or [])[:600] if value]
+    exact_tokens = set()
+    for value in values[:300]:
+        exact_tokens.add(("word", value))
+        exact_tokens.add(("low_nibble", value & 0xFFFFFFF0))
+
+    fuzzy_tokens = set()
+    # Low-diversity fingerprints create enormous ambiguous buckets and carry
+    # too little structure for tolerant candidate expansion.
+    fuzzy_values = values if len(set(values)) >= 8 else []
+    segment_size = max(1, (len(fuzzy_values) + 3) // 4) if fuzzy_values else 1
+    for segment_index, start in enumerate(range(0, len(fuzzy_values), segment_size)):
+        if segment_index >= 4:
+            break
+        segment = fuzzy_values[start:start + segment_size]
+        sample_step = max(1, len(segment) // 16)
+        sample = segment[::sample_step][:16]
+        for byte_index, shift in enumerate((0, 8, 16, 24)):
+            mask = ~(0xFF << shift) & 0xFFFFFFFF
+            projected = [value & mask for value in sample]
+            if not any(projected):
+                continue
+            digest = 2166136261
+            for value in projected:
+                digest = ((digest ^ value) * 16777619) & 0xFFFFFFFF
+            fuzzy_tokens.add(("fuzzy_segment", segment_index, byte_index, digest))
+    return (sorted(exact_tokens, key=repr)[:exact_limit] +
+            sorted(fuzzy_tokens, key=repr)[:fuzzy_limit])
+
+
 def cluster_duplicates(
     tracks: List[AudioTrack], progress_callback=None, is_cancelled=None,
     config: Optional[DetectionConfig] = None, max_bucket_size: int = 500,
@@ -162,12 +194,8 @@ def cluster_duplicates(
     for idx, track in enumerate(acoustic_tracks):
         if cancelled():
             return finish([])
-        seen = set()
-        for value in (track.fingerprint_raw or [])[:300]:
-            if value:
-                seen.update((value, value & 0xFFFFFFF0))
-        for value in seen:
-            shingle_index[value].append(idx)
+        for token in _fingerprint_candidate_tokens(track.fingerprint_raw):
+            shingle_index[token].append(idx)
 
     if progress_callback:
         progress_callback(0.0, 0, 0, "Filtrando coincidencias acústicas...")

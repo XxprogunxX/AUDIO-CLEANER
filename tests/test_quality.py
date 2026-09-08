@@ -5,6 +5,7 @@ Unit tests for Quality Scoring and Transcode / Fake Lossless Detection.
 import unittest
 from core.models import AudioTrack
 from core.quality_analyzer import evaluate_track_quality
+from core.spectral_types import SpectralAssessment
 
 
 class TestQualityAnalyzer(unittest.TestCase):
@@ -17,7 +18,8 @@ class TestQualityAnalyzer(unittest.TestCase):
             bit_depth=16,
             is_lossless=True,
             spectral_cutoff=22050.0,
-            fake_lossless_confidence=0.0
+            fake_lossless_confidence=0.0,
+            spectral_assessment=SpectralAssessment.NO_LOSSY_EVIDENCE
         )
         evaluate_track_quality(flac_track)
 
@@ -34,7 +36,7 @@ class TestQualityAnalyzer(unittest.TestCase):
         evaluate_track_quality(mp3_track)
 
         self.assertGreater(flac_track.quality_score, mp3_track.quality_score)
-        self.assertIn("Lossless Auténtico", flac_track.quality_details)
+        self.assertIn("sin evidencia lossy", flac_track.quality_details)
 
     def test_fake_flac_transcode_penalized(self):
         fake_flac = AudioTrack(

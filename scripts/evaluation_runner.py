@@ -3,6 +3,7 @@ import sys
 import csv
 import json
 import argparse
+from dataclasses import asdict
 from collections import defaultdict
 from typing import Dict, Any, List
 
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from core.scanner import _process_audio_worker
 from core.models import AudioTrack, DuplicateType
 from core.comparator import compare_tracks
+from core.clustering import cluster_duplicates
 
 def calculate_metrics(confusion_matrix: Dict[str, Dict[str, int]], misclassifications: List[Dict[str, Any]], evaluated_cases: int) -> Dict[str, Any]:
     categories = [e.value for e in DuplicateType]
@@ -248,12 +250,104 @@ def run_evaluation(manifest_path: str, dataset_dir: str, output_json: str, limit
     if summary["error_cases"] > 0:
         print(f"Warning: {summary['error_cases']} cases failed to evaluate.")
 
+
+def run_pipeline_evaluation(manifest_path: str, dataset_dir: str, output_json: str, limit: int = 0):
+    """Measure file-to-group recall, including candidate generation and clustering."""
+    categories = {item.value for item in DuplicateType}
+    positive_categories = categories - {DuplicateType.NO_MATCH.value, DuplicateType.UNCERTAIN.value}
+    with open(manifest_path, 'r', encoding='utf-8') as handle:
+        rows = [row for row in csv.DictReader(handle)
+                if row.get('track_a_path', '').strip() and row.get('track_b_path', '').strip()]
+    if limit > 0:
+        rows = rows[:limit]
+
+    valid_rows, errors = [], []
+    unique_paths = set()
+    for row in rows:
+        expected = row.get('expected_category', '').strip()
+        a = os.path.abspath(os.path.join(dataset_dir, row['track_a_path'].strip()))
+        b = os.path.abspath(os.path.join(dataset_dir, row['track_b_path'].strip()))
+        if expected not in categories:
+            errors.append({'row': row, 'error': f'Invalid expected_category: {expected}'})
+        elif not os.path.isfile(a) or not os.path.isfile(b):
+            errors.append({'row': row, 'error': 'One or both audio files do not exist.'})
+        else:
+            valid_rows.append((row, a, b, expected))
+            unique_paths.update((a, b))
+
+    tracks, file_errors = [], []
+    for path in sorted(unique_paths):
+        try:
+            data = _process_audio_worker(path)
+            if not data:
+                raise ValueError('feature extraction returned no track')
+            tracks.append(AudioTrack.from_dict(data))
+        except Exception as error:
+            file_errors.append({'path': path, 'error': str(error)})
+    processed = {track.filepath: track for track in tracks}
+    groups, coverage = cluster_duplicates(tracks, return_coverage=True)
+    group_by_path = {
+        track.filepath: group.group_id
+        for group in groups for track in group.tracks
+    }
+
+    tp = fp = tn = fn = 0
+    pair_results = []
+    unevaluated = 0
+    for row, a, b, expected in valid_rows:
+        if a not in processed or b not in processed:
+            unevaluated += 1
+            continue
+        expected_duplicate = expected in positive_categories
+        detected_duplicate = group_by_path.get(a) is not None and group_by_path.get(a) == group_by_path.get(b)
+        if expected_duplicate and detected_duplicate:
+            tp += 1
+        elif expected_duplicate:
+            fn += 1
+        elif detected_duplicate:
+            fp += 1
+        else:
+            tn += 1
+        pair_results.append({
+            'track_a': row['track_a_path'], 'track_b': row['track_b_path'],
+            'expected_category': expected, 'expected_duplicate': expected_duplicate,
+            'detected_same_group': detected_duplicate,
+        })
+
+    recall = tp / (tp + fn) if tp + fn else None
+    precision = tp / (tp + fp) if tp + fp else None
+    report = {
+        'mode': 'file_to_final_group',
+        'summary': {
+            'manifest_pairs': len(rows), 'evaluated_pairs': len(pair_results),
+            'unevaluated_pairs': unevaluated, 'file_errors': len(file_errors),
+            'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn,
+            'recall': recall, 'precision': precision,
+        },
+        'coverage': asdict(coverage),
+        'pair_results': pair_results,
+        'errors': errors,
+        'file_errors': file_errors,
+    }
+    with open(output_json, 'w', encoding='utf-8') as handle:
+        json.dump(report, handle, indent=4, ensure_ascii=False)
+    print(f"Pipeline evaluation saved to {output_json}")
+    print(f"Recall: {'N/A' if recall is None else f'{recall * 100:.2f}%'}; "
+          f"Precision: {'N/A' if precision is None else f'{precision * 100:.2f}%'}; "
+          f"errors: {len(errors) + len(file_errors) + unevaluated}")
+    return report
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate the Evidence Engine against a labeled dataset.")
     parser.add_argument("--manifest", type=str, required=True, help="Path to manifest.csv")
     parser.add_argument("--dataset-dir", "--base-dir", dest="dataset_dir", type=str, required=True, help="Base directory for the audio files")
     parser.add_argument("--output", type=str, default="validation_report.json", help="Path to save the output JSON report")
     parser.add_argument("--limit", "--max-cases", dest="limit", type=int, default=0, help="Límite máximo de pares a evaluar (0 = todos)")
+    parser.add_argument("--mode", choices=("pair", "pipeline"), default="pair",
+                        help="pair evalúa el comparador; pipeline mide archivos hasta grupos finales")
     args = parser.parse_args()
     
-    run_evaluation(args.manifest, args.dataset_dir, args.output, limit=args.limit)
+    if args.mode == "pipeline":
+        run_pipeline_evaluation(args.manifest, args.dataset_dir, args.output, limit=args.limit)
+    else:
+        run_evaluation(args.manifest, args.dataset_dir, args.output, limit=args.limit)

@@ -274,7 +274,7 @@ Este `.exe` es completamente autónomo y puede distribuirse en cualquier PC con 
 
 ## 🧪 Suite de Pruebas Automatizadas
 
-El proyecto cuenta con una suite de **218 pruebas automatizadas y 11 subcasos parametrizados** que valida integridad matemática, seguridad de borrado, concurrencia, revalidación previa a cualquier operación que retire el origen y persistencia:
+El proyecto cuenta con una suite de **227 pruebas automatizadas y 11 subcasos parametrizados** que valida integridad matemática, seguridad de borrado, concurrencia, revalidación previa a cualquier operación que retire el origen y persistencia:
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
@@ -299,6 +299,10 @@ python -m unittest discover -s tests -p "test_*.py"
   - Firma rápida de 12 KB (`quick_signature`) para invalidación de caché, con revalidación criptográfica SHA-256 autoritativa obligatoria en disco previa a cualquier acción destructiva (`EXACT_HASH` y `EXACT_AUDIO`).
   - Migración SQLite aditiva e idempotente (`PRAGMA table_info` y `ALTER TABLE` seguro preservando datos existentes).
   - Generación bounded de candidatos durante la ingesta streaming con memoria acotada.
+- **Tercera auditoría — Concurrencia, recall y evidencia de interfaz (9 pruebas)**:
+  - Reclamación atómica del origen durante backup, papelera y eliminación; preservación de destinos ajenos o ambiguos.
+  - Recuperación conservadora tras cierres, candidatos acústicos difusos acotados, FFmpeg resuelto dentro del paquete y códigos de salida fiables en CLI.
+  - Etiquetas lossless prudentes, visualización espectral sin datos inventados y evaluación de recall del pipeline completo.
 
 ---
 
@@ -398,6 +402,6 @@ Este proyecto está bajo la Licencia MIT. Para más información, consulta el ar
 
 ## Correcciones de auditoría y validación
 
-La revisión de septiembre de 2026 refuerza la selección segura de duplicados, la comparación PCM, la cobertura del escaneo, la caché y las sesiones. Consulta [AUDIT_FIXES.md](AUDIT_FIXES.md) para los cambios, pruebas, requisitos de compilación y límites operativos.
+La revisión de septiembre de 2026 refuerza la selección segura de duplicados, la comparación PCM, la cobertura del escaneo, la caché y las sesiones. Consulta [AUDIT_FIXES.md](AUDIT_FIXES.md) y [THIRD_AUDIT_FIXES.md](THIRD_AUDIT_FIXES.md) para los cambios, pruebas, requisitos de compilación y límites operativos.
 
 Para validar el proyecto con datos temporales: `python scripts/validate_project.py`. Para comprobar la distribución compilada: `python scripts/check_exe_binaries.py` y `python scripts/smoke_release.py --exe dist/AudioDuplicateDetector.exe`.
