@@ -50,6 +50,10 @@ def save_session_atomic(
         if os.path.exists(session_path) and os.path.getsize(session_path) > 0:
             try:
                 import shutil
+                with open(session_path, encoding="utf-8") as previous:
+                    payload = json.load(previous)
+                if not isinstance(payload, dict) or not isinstance(payload.get("groups", []), list):
+                    raise ValueError("Invalid primary session: preserving existing backup")
                 shutil.copy2(session_path, bak_path)
             except Exception as bak_err:
                 logger.debug("Could not create session backup: %s", bak_err)
@@ -87,11 +91,18 @@ def load_session_safe(
     bak_path = session_path + ".bak"
     data = None
 
+    def validate(payload):
+        if not isinstance(payload, dict) or not isinstance(payload.get("folder", ""), str):
+            raise ValueError("Invalid session object or folder")
+        if not isinstance(payload.get("groups", []), list):
+            raise ValueError("Session groups must be a list")
+        return payload
+
     # Try primary file
     if os.path.exists(session_path):
         try:
             with open(session_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                data = validate(json.load(f))
         except Exception as e:
             logger.warning("Corrupted primary session file at %s: %s", session_path, e)
             data = None
@@ -100,7 +111,7 @@ def load_session_safe(
     if data is None and os.path.exists(bak_path):
         try:
             with open(bak_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                data = validate(json.load(f))
                 logger.info("Successfully recovered session from backup %s", bak_path)
         except Exception as e:
             logger.warning("Corrupted backup session file at %s: %s", bak_path, e)

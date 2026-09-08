@@ -88,8 +88,6 @@ class TestValidationFramework(unittest.TestCase):
         run_evaluation(self.manifest_path, self.test_dir, self.report_path)
         
         self.assertTrue(os.path.exists(self.report_path), "JSON report was not generated")
-        import shutil
-        shutil.copy(self.report_path, "scratch_validation_report.json")
         
         with open(self.report_path, 'r', encoding='utf-8') as f:
             report = json.load(f)

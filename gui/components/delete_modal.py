@@ -336,49 +336,43 @@ class DeleteModal(QDialog):
 
     # ── Public API ────────────────────────────────────────────────
     def execute_action(self):
+        from gui.operation_worker import run_file_operation
+        from gui.components.audio_player import AudioPlayer
+        AudioPlayer.get_instance().stop()
+        result = run_file_operation(self, self._execute_action_sync)
+        if self._export_csv:
+            self._write_csv(result)
+        return result
+
+    def _execute_action_sync(self):
         """
         Execute the selected deletion mode on marked files using centralized FileOperationService.
         Returns the full OperationResult object (which also supports tuple unpacking for backwards compatibility).
         """
         from core.file_manager import FileOperationService, OperationResult, OperationStatus
 
-        def _pre_hook(fp: str):
-            try:
-                from gui.components.audio_player import AudioPlayer
-                player = AudioPlayer.get_instance()
-                if getattr(player, "current_playing_file", None) == fp:
-                    player.stop()
-            except Exception:
-                pass
-
         if self._selected_mode == "backup":
             result = FileOperationService.backup(
                 self.groups, self._backup_folder, db=self.db,
                 allow_manual_review_bypass=True,
-                pre_operation_hook=_pre_hook
             )
 
         elif self._selected_mode == "trash":
             result = FileOperationService.trash(
                 self.groups, db=self.db,
                 allow_manual_review_bypass=True,
-                pre_operation_hook=_pre_hook
             )
 
         elif self._selected_mode == "permanent":
             result = FileOperationService.delete_permanently(
                 self.groups, db=self.db,
                 allow_manual_review_bypass=True,
-                pre_operation_hook=_pre_hook
             )
         else:
             result = OperationResult(
                 success=0, failed=0, logs=["Modo desconocido"],
                 status=OperationStatus.FAILED, reason="UNKNOWN_MODE"
             )
-
-        if self._export_csv:
-            self._write_csv(result)
 
         return result
 

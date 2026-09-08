@@ -42,6 +42,7 @@ Una aplicación de escritorio moderna, robusta y de alto rendimiento en Python d
 - **Duplicados Acústicos ($\ge 95\%$, `ACOUSTIC_DUPLICATE`)**:
   - Huellas acústicas Chromaprint (`fpcalc`) con comparación Hamming bitwise y ventana de alineamiento temporal dinámico de hasta **600 frames**.
   - Identifica la misma grabación original sin importar variaciones de formato (`MP3`, `FLAC`, `WAV`, `M4A`, `OGG`, `AAC`), tasa de bits (320 kbps vs 128 kbps), normalización de volumen o compresión.
+  - Se presenta siempre para **revisión manual**. Una huella acústica parcial no demuestra que dos archivos completos sean intercambiables, por lo que esta categoría nunca se marca automáticamente para eliminar.
 - **Posibles Duplicados / Versiones ($80\% - 94.9\%$, `POSSIBLE_DUPLICATE`)**:
   - Detecta remasterizaciones, radio edits, versiones extendidas o grabaciones en vivo que comparten la misma base armónica.
 - **Revisión Manual de Baja Confianza ($40\% - 79.9\%$, `LOW_CONFIDENCE_REVIEW`)**:
@@ -49,11 +50,11 @@ Una aplicación de escritorio moderna, robusta y de alto rendimiento en Python d
   - Los grupos en esta franja nacen **siempre protegidos** contra auto-eliminación (`requires_manual_review = True`), forzando la intervención humana.
 
 ### 3. 🛡️ Seguridad Blindada y Prevención contra Pérdida de Datos
-- **Mitigación de Transitividad Insegura (`has_weak_link`)**: Si dentro de un clúster una pista intermedia vincula débilmente dos audios distintos, el grupo completo se degrada y exige confirmación manual obligatoria.
+- **Coincidencia directa y protección acústica**: cada candidato se contrasta con la copia recomendada y todos los grupos acústicos exigen revisión humana, incluso con una puntuación alta.
 - **Protección de Copia Única**: El sistema bloquea activamente cualquier intento de eliminar todas las copias de un grupo; siempre se preserva al menos una pista intacta.
 - **Inmunidad para Pistas [CONSERVAR]**: Jamás se permite el borrado de archivos marcados para mantenerse.
 - **Aislamiento en Limpieza Automática**: El motor `file_manager.py` y el CLI ignoran preventivamente cualquier grupo sin resolución humana explícita.
-- **Carpetas de Respaldo y Simulación (*Dry-Run*)**: Opción de mover archivos duplicados a un directorio de backup seguro antes de cualquier borrado definitivo, con capacidad de simular acciones en consola sin tocar el disco.
+- **Respaldo verificado y Simulación (*Dry-Run*)**: el movimiento escribe una copia temporal, fuerza su persistencia, verifica SHA-256 y solo después retira el origen. El journal recupera cierres inesperados sin aceptar copias parciales o dañadas.
 
 ### 4. 🔬 Auditoría Espectral y Detección de Falsos Lossless (*Fake FLAC*)
 - **Análisis FFT de Corte Espectral (*Spectral Rolloff*)**:
@@ -67,7 +68,7 @@ Calcula automáticamente qué archivo es el mejor dentro de cada grupo de duplic
 - Tasa de bits real (*bitrate*) y ancho de banda espectral útil.
 - Frecuencia de muestreo (44.1 kHz, 48 kHz, 96 kHz / 192 kHz Hi-Res) y profundidad de bits (16-bit vs 24-bit).
 - Integridad temporal y duración completa de la pista.
-- Asigna recomendaciones automáticas `[CONSERVAR]` / `[ELIMINAR]` con justificación técnica detallada y cálculo de ahorro de espacio en disco.
+- Asigna recomendaciones automáticas `[CONSERVAR]` / `[ELIMINAR]` únicamente cuando existe identidad completa (`EXACT_HASH` o `EXACT_AUDIO`). En coincidencias acústicas, la puntuación ayuda a revisar sin decidir por el usuario.
 
 ### 6. ⚡ Rendimiento Extremo y Escalabilidad Bounded
 - **Candidate Generation Bounded en Streaming**: Generación de candidatos con tope estricto de memoria RAM durante la ingesta (evita la explosión combinatoria $O(N^2)$ en bibliotecas de más de 100,000 archivos).
@@ -232,7 +233,7 @@ python main.py --cli --folder "D:\MiMusica" --export-csv "reporte_duplicados.csv
 python main.py --cli --folder "D:\MiMusica" --auto-move "D:\Backup_Duplicados" --dry-run
 ```
 
-#### 4. Escanear y mover duplicados inferiores automáticamente a una carpeta de respaldo:
+#### 4. Escanear y mover duplicados exactos inferiores automáticamente a una carpeta de respaldo:
 ```bash
 python main.py --cli --folder "D:\MiMusica" --auto-move "D:\Backup_Duplicados"
 ```
@@ -244,7 +245,7 @@ python main.py --cli --folder "D:\MiMusica" --auto-move "D:\Backup_Duplicados"
 | `--cli` | | Ejecuta en modo headless / consola sin interfaz gráfica. |
 | `--db` | | Ruta personalizada para el archivo de base de datos SQLite. |
 | `--export-csv` | | Exporta los grupos de duplicados y recomendaciones a un archivo CSV. |
-| `--auto-move` | | Mueve automáticamente los archivos duplicados inferiores a la carpeta indicada. |
+| `--auto-move` | | Mueve automáticamente solo duplicados exactos; los acústicos y posibles quedan para revisión. |
 | `--dry-run` | | Muestra las acciones planificadas sin realizar modificaciones en disco. |
 
 ---
@@ -273,7 +274,7 @@ Este `.exe` es completamente autónomo y puede distribuirse en cualquier PC con 
 
 ## 🧪 Suite de Pruebas Automatizadas
 
-El proyecto cuenta con una suite exhaustiva de **190 pruebas automatizadas** (0 errores, 0 fallos, 0 omitidos) que valida de extremo a extremo la integridad matemática, seguridad de borrado, concurrencia y persistencia:
+El proyecto cuenta con una suite de **218 pruebas automatizadas y 11 subcasos parametrizados** que valida integridad matemática, seguridad de borrado, concurrencia, revalidación previa a cualquier operación que retire el origen y persistencia:
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
@@ -282,7 +283,7 @@ python -m unittest discover -s tests -p "test_*.py"
 ### Cobertura por Fases de Auditoría y Blindaje:
 - **Fase A — Seguridad Crítica & Anti Data-Loss (79 pruebas)**:
   - Preservación estricta de PCM en `EXACT_AUDIO` (sin downmix mono, sin resampling forzado, rechazo por mismatch de canales, bit depth o layout).
-  - Protocolo `OperationJournal` transaccional en subdirectorio `.audioclean_journal/` con recuperación automática tras caída del proceso (*crash recovery*).
+  - Protocolo `OperationJournal` transaccional con SHA-256 esperado, copia temporal verificada y recuperación automática tras caída del proceso (*crash recovery*).
   - Inmunidad fail-closed en clústeres mixtos con enlaces débiles (`has_weak_link` / `requires_manual_review = True`).
 - **Fase B — Configuración Centralizada (23 pruebas)**:
   - Inmutabilidad de `DetectionConfig`, validación de jerarquía de umbrales, persistencia atómica en `settings.json` y fallback robusto ante corrupción.
@@ -292,10 +293,10 @@ python -m unittest discover -s tests -p "test_*.py"
 - **Fase D — Persistencia, SQLite Seguro y GUI (27 pruebas)**:
   - Guardado atómico de sesiones con backup (`last_session.json` + `last_session.json.bak`).
   - Timeout de cierre seguro en `ScannerWorker` (`wait(5000)`); aborta el cierre de ventana si el hilo sigue activo para no corromper SQLite.
-- **Fase E — Escalabilidad, Streaming Robusto y Packaging (35 pruebas)**:
+- **Fase E — Escalabilidad, Streaming Robusto, Packaging y RC1 (40 pruebas)**:
   - Runner FFmpeg con drenaje concurrente no bloqueante de `stdout` y `stderr` (prevención de deadlocks por contrapresión de pipes).
   - Cancelación cooperativa de workers en `ProcessPoolExecutor`.
-  - Firma rápida de 12 KB (`quick_signature`) para invalidación de caché, con revalidación criptográfica SHA-256 obligatoria antes de acciones destructivas.
+  - Firma rápida de 12 KB (`quick_signature`) para invalidación de caché, con revalidación criptográfica SHA-256 autoritativa obligatoria en disco previa a cualquier acción destructiva (`EXACT_HASH` y `EXACT_AUDIO`).
   - Migración SQLite aditiva e idempotente (`PRAGMA table_info` y `ALTER TABLE` seguro preservando datos existentes).
   - Generación bounded de candidatos durante la ingesta streaming con memoria acotada.
 
@@ -314,6 +315,7 @@ python -m unittest discover -s tests -p "test_*.py"
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1,000** | B (Disperso realista) | **1.41 s** | 191.0 MB | 556 | 556 | No (`False`) | **100.0%** | 100.0% |
 | **1,000** | D (Adversarial, alta colisión) | **36.62 s** | 243.1 MB | 124,750 | 124,750 | Sí (`True`, 11 buckets) | N/A | N/A |
+| **5,000** | D (Adversarial, alta colisión) | **31.75 s** | 335.2 MB | 124,750 | 124,750 | Sí (`True`, 11 buckets) | N/A | N/A |
 | **100,000** | B (Disperso realista, 5% clústeres) | **97.53 s** | 2,584.6 MB | 55,110 | 55,110 | No (`False`) | **100.0%** | 100.0% |
 
 ## 📂 Estructura del Proyecto
@@ -392,3 +394,10 @@ Detector-de-huellas-dactilares-ac-stico-y-duplicado-de-audio/
 ## 📄 Licencia
 
 Este proyecto está bajo la Licencia MIT. Para más información, consulta el archivo `LICENSE`.
+
+
+## Correcciones de auditoría y validación
+
+La revisión de septiembre de 2026 refuerza la selección segura de duplicados, la comparación PCM, la cobertura del escaneo, la caché y las sesiones. Consulta [AUDIT_FIXES.md](AUDIT_FIXES.md) para los cambios, pruebas, requisitos de compilación y límites operativos.
+
+Para validar el proyecto con datos temporales: `python scripts/validate_project.py`. Para comprobar la distribución compilada: `python scripts/check_exe_binaries.py` y `python scripts/smoke_release.py --exe dist/AudioDuplicateDetector.exe`.

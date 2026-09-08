@@ -3,11 +3,21 @@ import os
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
+from pathlib import Path
+import shutil
+
 block_cipher = None
+project_root = Path(SPECPATH)
+audio_binaries = []
+for name in ('ffmpeg.exe', 'ffprobe.exe', 'fpcalc.exe'):
+    local_binary = project_root / 'bin' / name
+    resolved = str(local_binary) if local_binary.is_file() else shutil.which(name)
+    if not resolved:
+        raise RuntimeError(f'Missing build dependency: {name}. Place it in bin/ or PATH.')
+    audio_binaries.append((resolved, 'bin'))
 
 # Ensure bin directory (fpcalc, ffmpeg, ffprobe) and app_icon are included in the package
 datas = [
-    ('bin', 'bin') if os.path.exists('bin') else ('bin/fpcalc.exe', 'bin'),
     ('app_icon.png', '.') if os.path.exists('app_icon.png') else ('app_icon.ico', '.'),
 ]
 
@@ -37,7 +47,7 @@ hiddenimports = [
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=audio_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
