@@ -135,6 +135,7 @@ def analyze_pcm_samples(
     channel_suspects: List[bool] = []
     channel_cutoffs: List[float] = []
     channel_confidences: List[float] = []
+    channel_cutoff_ratios: List[float] = []
 
     for ch in range(ch_count):
         ch_samples = samples[:, ch]
@@ -197,6 +198,7 @@ def analyze_pcm_samples(
 
         if valid_windows_ch >= (PROVISIONAL_MIN_VALID_WINDOWS // ch_count or 1):
             ratio = cutoff_windows_ch / valid_windows_ch
+            channel_cutoff_ratios.append(ratio)
             if ratio >= PROVISIONAL_PERSISTENCE_RATIO and len(observed_cutoffs) > 0:
                 channel_suspects.append(True)
                 channel_cutoffs.append(float(np.median(observed_cutoffs)))
@@ -237,8 +239,8 @@ def analyze_pcm_samples(
     # Check for borderline consistency
     # (e.g. some cutoff presence but not meeting the 80% threshold)
     borderline_presence = any(
-        (0.40 <= (c / max(1, v)) < PROVISIONAL_PERSISTENCE_RATIO)
-        for c, v in zip([w for w in [len(observed_cutoffs)]], [total_valid_windows])
+        0.40 <= ratio < PROVISIONAL_PERSISTENCE_RATIO
+        for ratio in channel_cutoff_ratios
     )
     if borderline_presence:
         return SpectralResult(
@@ -271,8 +273,11 @@ def _probe_audio_segment(
 ) -> Optional[np.ndarray]:
     """Decodes a specific time slice using FFmpeg with native channel preservation."""
     try:
+        ffmpeg_path = get_ffmpeg_path()
+        if not ffmpeg_path:
+            return None
         cmd = [
-            "ffmpeg", "-v", "quiet", "-nostdin",
+            ffmpeg_path, "-v", "quiet", "-nostdin",
             "-ss", f"{seek_time:.2f}",
             "-t", f"{duration:.2f}",
             "-i", filepath,
@@ -296,8 +301,7 @@ def _probe_audio_segment(
         try:
             raw_bytes, _ = proc.communicate(timeout=10.0)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
+            terminate_process_tree(proc)
             return None
 
         if len(raw_bytes) < sample_rate * channels * 4 * 0.5:  # At least 0.5s decoded
@@ -491,7 +495,12 @@ def evaluate_track_quality(track: AudioTrack) -> None:
             details.append(f"⚠️ Posible Transcodificación ({track.fake_lossless_confidence:.0f}% consistencia)")
         else:
             score += 45.0
-            details.append(f"Lossless Auténtico ({track.format})")
+            if track.spectral_assessment == SpectralAssessment.NO_LOSSY_EVIDENCE:
+                details.append(f"Contenedor lossless ({track.format}); sin evidencia lossy")
+            elif track.spectral_assessment == SpectralAssessment.NOT_ANALYZED:
+                details.append(f"Contenedor lossless ({track.format}); no analizado")
+            else:
+                details.append(f"Contenedor lossless ({track.format}); autenticidad no determinada")
     else:
         # Lossy format rating
         if track.format in ("AAC", "M4A", "OGG", "OPUS"):

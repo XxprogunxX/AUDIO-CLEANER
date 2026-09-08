@@ -80,7 +80,7 @@ class QualityView(QWidget):
         lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
         title_block.addWidget(lbl_header)
 
-        lbl_sub = QLabel("Análisis espectral FFT de alta resolución para detectar pistas upscaled / fake lossless y baja fidelidad.")
+        lbl_sub = QLabel("Evaluación heurística para detectar indicios compatibles con transcodificación y baja fidelidad.")
         lbl_sub.setObjectName("muted")
         title_block.addWidget(lbl_sub)
         header_row.addLayout(title_block, stretch=1)
@@ -92,7 +92,7 @@ class QualityView(QWidget):
         kpi_row.setSpacing(10)
 
         self.card_avg = QualityStatCard("Score Promedio", "fa5s.chart-line", COLORS["cyan"])
-        self.card_lossless = QualityStatCard("Lossless Real", "fa5s.gem", COLORS["success"])
+        self.card_lossless = QualityStatCard("Sin indicios lossy", "fa5s.gem", COLORS["success"])
         self.card_fake = QualityStatCard("Fake Lossless", "fa5s.exclamation-triangle", COLORS["warning"])
         self.card_low = QualityStatCard("Baja Calidad (<192k)", "fa5s.arrow-down", COLORS["danger"])
 
@@ -118,7 +118,7 @@ class QualityView(QWidget):
         self.btn_fake = QPushButton("⚠️ Transcodificaciones")
         self.btn_fake.setCheckable(True)
 
-        self.btn_lossless = QPushButton("✓ Lossless Auténtico")
+        self.btn_lossless = QPushButton("✓ Sin indicios lossy")
         self.btn_lossless.setCheckable(True)
 
         self.btn_low = QPushButton("⬇️ Baja Calidad")
@@ -273,7 +273,11 @@ class QualityView(QWidget):
         avg_score = sum(scores) / max(len(scores), 1)
         self.card_avg.set_value(f"{avg_score:.1f} / 100")
 
-        lossless_count = sum(1 for t in self.tracks if t.is_lossless and t.fake_lossless_confidence <= 50.0)
+        from core.spectral_types import SpectralAssessment
+        lossless_count = sum(
+            1 for t in self.tracks
+            if t.is_lossless and t.spectral_assessment == SpectralAssessment.NO_LOSSY_EVIDENCE
+        )
         fake_count = sum(1 for t in self.tracks if t.fake_lossless_confidence > 50.0)
         low_count = sum(1 for t in self.tracks if not t.is_lossless and t.bitrate > 0 and t.bitrate < 192)
 
@@ -290,7 +294,7 @@ class QualityView(QWidget):
         text = button.text()
         if "Transcodificaciones" in text:
             self.active_filter = "fake"
-        elif "Lossless" in text:
+        elif "indicios lossy" in text:
             self.active_filter = "lossless"
         elif "Baja Calidad" in text:
             self.active_filter = "low"
@@ -311,7 +315,8 @@ class QualityView(QWidget):
                 if t.fake_lossless_confidence <= 50.0:
                     continue
             elif self.active_filter == "lossless":
-                if not t.is_lossless or t.fake_lossless_confidence > 50.0:
+                from core.spectral_types import SpectralAssessment
+                if not t.is_lossless or t.spectral_assessment != SpectralAssessment.NO_LOSSY_EVIDENCE:
                     continue
             elif self.active_filter == "low":
                 if t.is_lossless or (t.bitrate >= 192 and t.bitrate > 0):

@@ -61,11 +61,13 @@ La validación no escribe resultados en el árbol del proyecto. También desacti
 
 ## Resultado verificado en esta revisión
 
-- Suite completa tras el segundo endurecimiento: **218 pruebas aprobadas y 11 subcasos aprobados**.
+- Suite completa tras la tercera auditoría: **227 pruebas aprobadas y 11 subcasos aprobados**.
 - Smoke test desde código: dos escaneos aprobados, incluida reutilización de caché y dry-run.
 - Compilación PyInstaller: completada correctamente.
 - Inspección del paquete: FFmpeg, FFprobe y fpcalc presentes; sin bases de datos.
-- Smoke test del ejecutable con PATH restringido: dos escaneos aprobados, clasificación EXACT_AUDIO y archivos intactos.
+- Smoke test del ejecutable con PATH restringido: tres escaneos aprobados, clasificación EXACT_AUDIO, detección espectral de transcode y archivos intactos.
 - Auditoría de 30 dependencias: **0 vulnerabilidades conocidas reportadas por pip-audit**.
 - Muestra controlada de cinco canciones reales y 20 casos derivados: **0 selecciones automáticas inseguras**; los originales de `F:\` no se modificaron.
 - Pruebas de recuperación ante cierres y fallos: **14 de 14 casos aprobados**.
+
+Los cambios de concurrencia, recall, análisis espectral empaquetado, etiquetas de interfaz, códigos de salida del CLI y evaluación integral se detallan en [THIRD_AUDIT_FIXES.md](THIRD_AUDIT_FIXES.md).

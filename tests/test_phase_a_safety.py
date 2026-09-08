@@ -707,7 +707,7 @@ class TestPhaseASafety(unittest.TestCase):
                 raise JournalError("Simulated write error on FS_DONE")
             return orig_update(self_obj, op_id, state)
 
-        with patch.object(OperationJournal, "update_state", side_effect=fail_on_fs_done):
+        with patch.object(OperationJournal, "update_state", autospec=True, side_effect=fail_on_fs_done):
             result = FileOperationService.delete_permanently([group], db=self.db, journal_path=self.journal_path)
 
         self.assertFalse(os.path.exists(f_del))
@@ -739,7 +739,7 @@ class TestPhaseASafety(unittest.TestCase):
                 raise JournalError("Simulated write error on COMPLETED")
             return orig_update(self_obj, op_id, state)
 
-        with patch.object(OperationJournal, "update_state", side_effect=fail_on_completed):
+        with patch.object(OperationJournal, "update_state", autospec=True, side_effect=fail_on_completed):
             result = FileOperationService.delete_permanently([group], db=self.db, journal_path=self.journal_path)
 
         self.assertEqual(result.status, OperationStatus.PARTIAL_FAILURE)
