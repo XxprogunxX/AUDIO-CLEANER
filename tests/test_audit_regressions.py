@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -15,7 +16,7 @@ from unittest.mock import patch
 from core.clustering import cluster_duplicates, DuplicateGroupList
 from core.config import DetectionConfig
 from core.database import Database
-from core.file_manager import FileOperationService
+from core.file_manager import FileOperationService, OperationJournal, OperationStatus
 from core.fingerprint import AudioStreamInfo, verify_full_normalized_pcm_match
 from core.models import AudioTrack, DuplicateGroup, DuplicateType, FileAction, EvidenceReport, ScanCoverageReport
 from core.scanner import AudioScanner
@@ -28,6 +29,17 @@ def local_pool(**kwargs):
 
 
 class TestGroupingSafety(unittest.TestCase):
+    def test_acoustic_similarity_never_selects_files_automatically(self):
+        tracks = [AudioTrack(filepath=p, quality_score=2-i, fingerprint_raw=[17, 33, 49])
+                  for i, p in enumerate(('A', 'B'))]
+        report = EvidenceReport('A', 'B', DuplicateType.ACOUSTIC_DUPLICATE, 99.9)
+        with patch('core.clustering.ProcessPoolExecutor', side_effect=local_pool), \
+             patch('core.clustering.compare_tracks', return_value=report):
+            groups = cluster_duplicates(tracks)
+        self.assertEqual(groups[0].primary_type, DuplicateType.ACOUSTIC_DUPLICATE)
+        self.assertTrue(groups[0].requires_manual_review)
+        self.assertTrue(all(t.action == FileAction.UNSET for t in groups[0].tracks))
+
     def test_negative_or_missing_edge_to_retained_copy_requires_review(self):
         for missing_kind in (DuplicateType.NO_MATCH, DuplicateType.UNCERTAIN):
             with self.subTest(missing_kind=missing_kind):
@@ -197,8 +209,100 @@ class TestSessionRecovery(unittest.TestCase):
                 [AudioTrack('A'), AudioTrack('B')], 'A', verified_pairs=[['A','B']])
             self.assertTrue(save_session_atomic(path, folder, [group]))
             restored = load_session_safe(path)[1][0]
-            self.assertFalse(restored.requires_manual_review)
+            self.assertTrue(restored.requires_manual_review)
             self.assertEqual(restored.verified_pairs, [['A','B']])
+
+
+class TestVerifiedBackupRecovery(unittest.TestCase):
+    def make_group(self, folder):
+        keep, delete = Path(folder)/'keep.wav', Path(folder)/'delete.wav'
+        keep.write_bytes(b'original-audio')
+        delete.write_bytes(keep.read_bytes())
+        digest = hashlib.sha256(keep.read_bytes()).hexdigest()
+        tracks = [AudioTrack(str(keep), sha256=digest, action=FileAction.KEEP),
+                  AudioTrack(str(delete), sha256=digest, action=FileAction.DELETE)]
+        return DuplicateGroup('exact', DuplicateType.EXACT_HASH, tracks, str(keep)), keep, delete
+
+    @staticmethod
+    def journal_state(path):
+        connection = sqlite3.connect(path)
+        try:
+            return connection.execute('SELECT state FROM operation_journal').fetchone()[0]
+        finally:
+            connection.close()
+
+    def test_backup_blocks_source_changed_after_scan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            group, _, delete = self.make_group(folder)
+            delete.write_bytes(b'a-different-recording')
+            destination = Path(folder)/'backup'
+            result = FileOperationService.backup(
+                [group], str(destination), journal_path=str(Path(folder)/'journal.db'))
+            self.assertEqual(result.status, OperationStatus.FAILED)
+            self.assertTrue(delete.exists())
+            self.assertFalse(destination.exists() and any(destination.iterdir()))
+
+    def test_interrupted_copy_removes_partial_and_preserves_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            group, _, delete = self.make_group(folder)
+            destination = Path(folder)/'backup'
+            def partial_copy(source, target, length):
+                target.write(source.read(4))
+                target.flush()
+                raise OSError('simulated interrupted copy')
+            with patch('core.file_manager.shutil.copyfileobj', side_effect=partial_copy):
+                result = FileOperationService.backup(
+                    [group], str(destination), journal_path=str(Path(folder)/'journal.db'))
+            self.assertEqual(result.status, OperationStatus.FAILED)
+            self.assertTrue(delete.exists())
+            self.assertEqual(list(destination.iterdir()), [])
+
+    def test_reconcile_rolls_back_artifacts_when_source_exists(self):
+        with tempfile.TemporaryDirectory() as folder:
+            group, _, delete = self.make_group(folder)
+            target, temporary = Path(folder)/'backup.wav', Path(folder)/'partial.tmp'
+            target.write_bytes(delete.read_bytes())
+            temporary.write_bytes(b'partial')
+            digest = hashlib.sha256(delete.read_bytes()).hexdigest()
+            journal_path = str(Path(folder)/'journal.db')
+            journal = OperationJournal(journal_path)
+            journal.record_pending('op', str(delete), 'backup', str(target), str(temporary), digest)
+            logs = journal.reconcile()
+            self.assertTrue(delete.exists())
+            self.assertFalse(target.exists())
+            self.assertFalse(temporary.exists())
+            self.assertEqual(self.journal_state(journal_path), 'ABORTED')
+            self.assertTrue(logs)
+
+    def test_reconcile_accepts_only_verified_destination(self):
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt), tempfile.TemporaryDirectory() as folder:
+                group, _, delete = self.make_group(folder)
+                target = Path(folder)/'backup.wav'
+                expected = hashlib.sha256(delete.read_bytes()).hexdigest()
+                target.write_bytes(b'corrupt' if corrupt else delete.read_bytes())
+                delete.unlink()
+                journal_path = str(Path(folder)/'journal.db')
+                journal = OperationJournal(journal_path)
+                journal.record_pending('op', str(delete), 'backup', str(target), '', expected)
+                with Database(str(Path(folder)/'library.db')) as database:
+                    database.upsert_track(group.tracks[1])
+                    journal.reconcile(database)
+                    cached = database.get_track(str(delete)) is not None
+                self.assertEqual(self.journal_state(journal_path), 'FAILED' if corrupt else 'COMPLETED')
+                self.assertEqual(cached, corrupt)
+
+    def test_legacy_backup_without_hash_requires_manual_inspection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            _, _, delete = self.make_group(folder)
+            target = Path(folder)/'backup.wav'
+            target.write_bytes(delete.read_bytes())
+            delete.unlink()
+            journal_path = str(Path(folder)/'journal.db')
+            journal = OperationJournal(journal_path)
+            journal.record_pending('legacy', str(delete), 'backup', str(target))
+            journal.reconcile()
+            self.assertEqual(self.journal_state(journal_path), 'FAILED')
 
 
 class TestResponsiveGUI(unittest.TestCase):

@@ -15,11 +15,25 @@ def main():
         print('Missing test dependencies: ' + ', '.join(missing), file=sys.stderr)
         return 2
     with tempfile.TemporaryDirectory(prefix='audioclean-validation-') as state:
-        env = dict(os.environ, APPDATA=state, QT_QPA_PLATFORM='offscreen', SDL_AUDIODRIVER='dummy',
-                   PYTHONDONTWRITEBYTECODE='1')
+        env = dict(
+            os.environ,
+            APPDATA=state,
+            LOCALAPPDATA=state,
+            TEMP=state,
+            TMP=state,
+            QT_QPA_PLATFORM='offscreen',
+            SDL_AUDIODRIVER='dummy',
+            PYTHONDONTWRITEBYTECODE='1',
+        )
         bin_dirs = {str(Path(path).parent) for _, path in check_binaries().values()}
         env['PATH'] = os.pathsep.join(sorted(bin_dirs)) + os.pathsep + env.get('PATH', '')
-        return subprocess.call([sys.executable, '-B', '-m', 'pytest', 'tests', '-q'], cwd=root, env=env)
+        # Pytest's cache is unnecessary for release validation and can block on
+        # cloud-synchronised folders such as OneDrive after the final test.
+        return subprocess.call(
+            [sys.executable, '-B', '-m', 'pytest', 'tests', '-q', '-p', 'no:cacheprovider'],
+            cwd=root,
+            env=env,
+        )
 
 
 if __name__ == '__main__':

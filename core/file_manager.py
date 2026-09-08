@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Callable, Dict, Any
 from core.models import DuplicateGroup, AudioTrack, FileAction, DuplicateType, prune_duplicate_groups
 from core.database import Database
+from core.cache_signature import compute_current_file_sha256
 
 
 class JournalError(Exception):
@@ -50,6 +51,54 @@ def is_volume_accessible(filepath: str) -> bool:
             return os.path.exists(os.path.sep)
     except Exception:
         return False
+
+
+def _fsync_parent_directory(path: str) -> None:
+    """Best-effort durability barrier for directory metadata on supported systems."""
+    if os.name == "nt":
+        return
+    descriptor = None
+    try:
+        descriptor = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY)
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _copy_backup_verified(source: str, target: str, temporary: str, expected_sha256: str) -> None:
+    """Copy to a private temporary file, fsync it, verify it, then publish it."""
+    if os.path.exists(temporary):
+        os.remove(temporary)
+    try:
+        with open(source, "rb") as input_file, open(temporary, "xb") as output_file:
+            shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        if compute_current_file_sha256(temporary) != expected_sha256:
+            raise IOError("La copia temporal no coincide con el SHA-256 del archivo original")
+        try:
+            shutil.copystat(source, temporary)
+        except OSError:
+            pass
+        if os.name == "nt":
+            # Windows rename fails if another process created the destination.
+            os.rename(temporary, target)
+        else:
+            # A hard link publishes the verified inode atomically without replacing
+            # a path that appeared after collision resolution.
+            os.link(temporary, target)
+            os.remove(temporary)
+        _fsync_parent_directory(target)
+    except Exception:
+        if os.path.isfile(temporary):
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
+        raise
 
 
 @dataclass
@@ -110,11 +159,18 @@ class OperationJournal:
                         filepath TEXT NOT NULL,
                         action TEXT NOT NULL,
                         target_path TEXT,
+                        target_tmp_path TEXT DEFAULT '',
+                        expected_sha256 TEXT DEFAULT '',
                         state TEXT NOT NULL,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     );
                 """)
+                existing = {row[1] for row in conn.execute("PRAGMA table_info(operation_journal)")}
+                if "target_tmp_path" not in existing:
+                    conn.execute("ALTER TABLE operation_journal ADD COLUMN target_tmp_path TEXT DEFAULT ''")
+                if "expected_sha256" not in existing:
+                    conn.execute("ALTER TABLE operation_journal ADD COLUMN expected_sha256 TEXT DEFAULT ''")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_op_journal_state ON operation_journal(state);")
                 conn.commit()
         except Exception as e:
@@ -126,15 +182,26 @@ class OperationJournal:
                 except Exception:
                     pass
 
-    def record_pending(self, op_id: str, filepath: str, action: str, target_path: Optional[str] = None):
+    def record_pending(
+        self,
+        op_id: str,
+        filepath: str,
+        action: str,
+        target_path: Optional[str] = None,
+        target_tmp_path: Optional[str] = None,
+        expected_sha256: str = ""
+    ):
         conn = None
         try:
             now = datetime.now().isoformat()
             conn = self._get_connection()
             with conn:
                 conn.execute(
-                    "INSERT INTO operation_journal (op_id, filepath, action, target_path, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (op_id, filepath, action, target_path or "", "PENDING", now, now)
+                    "INSERT INTO operation_journal "
+                    "(op_id, filepath, action, target_path, target_tmp_path, expected_sha256, state, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (op_id, filepath, action, target_path or "", target_tmp_path or "",
+                     expected_sha256 or "", "PENDING", now, now)
                 )
                 conn.commit()
         except Exception as e:
@@ -172,7 +239,10 @@ class OperationJournal:
             conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM operation_journal WHERE state IN ('PENDING', 'FS_DONE') ORDER BY created_at ASC")
+            cursor.execute(
+                "SELECT * FROM operation_journal "
+                "WHERE state IN ('PENDING', 'TARGET_VERIFIED', 'FS_DONE') ORDER BY created_at ASC"
+            )
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
         except Exception as e:
@@ -192,6 +262,8 @@ class OperationJournal:
             filepath = op["filepath"]
             action = op.get("action", "")
             target_path = op.get("target_path", "")
+            target_tmp_path = op.get("target_tmp_path", "")
+            expected_sha256 = op.get("expected_sha256", "")
             state = op.get("state", "")
 
             # Safety check: Storage volume / drive accessibility
@@ -210,22 +282,67 @@ class OperationJournal:
                     )
                     continue
 
-                if not os.path.exists(filepath):
-                    if target_path and os.path.exists(target_path):
-                        if db is not None:
+                source_exists = os.path.isfile(filepath)
+                target_exists = bool(target_path and os.path.isfile(target_path))
+                tmp_exists = bool(target_tmp_path and os.path.isfile(target_tmp_path))
+
+                if source_exists:
+                    # Roll back artifacts created by an interrupted copy. The source
+                    # remains the authority, so startup never finishes a deletion.
+                    for artifact in (target_tmp_path, target_path):
+                        if artifact and os.path.isfile(artifact):
                             try:
-                                db.delete_track(filepath)
-                            except Exception as e:
-                                logs.append(f"Reconciliación pendiente: error al sincronizar SQLite para backup de {os.path.basename(filepath)}: {e}")
-                                continue
-                        self.update_state(op_id, "COMPLETED")
-                        logs.append(f"Reconciliación exitosa: backup de {os.path.basename(filepath)} completado y registrado.")
+                                os.remove(artifact)
+                            except OSError as cleanup_error:
+                                logs.append(
+                                    f"⚠️ Reconciliación pendiente: no se pudo retirar el artefacto "
+                                    f"'{artifact}': {cleanup_error}"
+                                )
+                                break
                     else:
-                        logs.append(f"⚠️ Reconciliación advertencia: archivo origen {filepath} ausente y destino {target_path} no encontrado.")
-                        self.update_state(op_id, "FAILED")
-                else:
-                    self.update_state(op_id, "ABORTED")
-                    logs.append(f"Reconciliación: backup pendiente para {os.path.basename(filepath)} descartado (archivo intacto en origen).")
+                        self.update_state(op_id, "ABORTED")
+                        logs.append(
+                            f"Reconciliación: backup interrumpido de {os.path.basename(filepath)} "
+                            "revertido; el archivo original permanece intacto."
+                        )
+                    continue
+
+                # Once the source is absent, only a cryptographically verified final
+                # target can close the operation. Legacy rows without an expected hash
+                # require manual inspection instead of assuming success.
+                if not expected_sha256:
+                    self.update_state(op_id, "FAILED")
+                    logs.append(
+                        f"⚠️ Backup no verificable para {os.path.basename(filepath)}: "
+                        "el journal antiguo no contiene SHA-256 esperado."
+                    )
+                    continue
+
+                target_hash = compute_current_file_sha256(target_path) if target_exists else ""
+                if target_hash != expected_sha256:
+                    self.update_state(op_id, "FAILED")
+                    logs.append(
+                        f"⚠️ Backup dañado o incompleto para {os.path.basename(filepath)}; "
+                        "la base de datos se conserva para revisión manual."
+                    )
+                    continue
+
+                if tmp_exists:
+                    try:
+                        os.remove(target_tmp_path)
+                    except OSError:
+                        pass
+                if db is not None:
+                    try:
+                        db.delete_track(filepath)
+                    except Exception as e:
+                        logs.append(f"Reconciliación pendiente: error al sincronizar SQLite para backup de {os.path.basename(filepath)}: {e}")
+                        continue
+                self.update_state(op_id, "COMPLETED")
+                logs.append(
+                    f"Reconciliación exitosa: backup verificado por SHA-256 de "
+                    f"{os.path.basename(filepath)} completado y registrado."
+                )
             else:
                 # trash or permanent
                 if not os.path.exists(filepath):
@@ -419,6 +536,7 @@ class FileOperationService:
                             logs.append(f"Aviso hook previo a operación ({track.filename}): {hook_err}")
 
                     resolved_target_path: Optional[str] = None
+                    temporary_target_path: Optional[str] = None
                     if mode == "backup":
                         target_filename = track.filename
                         candidate_path = os.path.join(destination_folder, target_filename)
@@ -428,25 +546,41 @@ class FileOperationService:
                             candidate_path = os.path.join(destination_folder, f"{base_name}_{counter}{ext}")
                             counter += 1
                         resolved_target_path = candidate_path
-
-                    # Revalidación autoritativa en disco previa a cualquier acción destructiva
-                    if mode in ("trash", "permanent"):
-                        from core.cache_signature import revalidate_destructive_action
-                        is_reval_ok, reval_msg = revalidate_destructive_action(
-                            group.primary_type,
-                            track,
-                            primary_retained
-                        )
-                        if not is_reval_ok:
-                            logs.append(f"Seguridad destructiva: Operación bloqueada para {track.filename}: {reval_msg}")
-                            failed += 1
-                            blocked += 1
-                            continue
-
                     op_id = str(uuid.uuid4())
+                    if resolved_target_path:
+                        temporary_target_path = f"{resolved_target_path}.audioclean-{op_id}.partial"
+
+                    # Moving to backup also removes the source path. Every mode must
+                    # therefore revalidate both the candidate and retained copy.
+                    from core.cache_signature import revalidate_destructive_action
+                    is_reval_ok, reval_msg = revalidate_destructive_action(
+                        group.primary_type,
+                        track,
+                        primary_retained
+                    )
+                    if not is_reval_ok:
+                        logs.append(f"Seguridad destructiva: Operación bloqueada para {track.filename}: {reval_msg}")
+                        failed += 1
+                        blocked += 1
+                        continue
+
+                    expected_sha256 = compute_current_file_sha256(track.filepath)
+                    if not expected_sha256:
+                        logs.append(f"No fue posible fijar el SHA-256 esperado para {track.filename}.")
+                        failed += 1
+                        blocked += 1
+                        continue
+
                     # Fail-closed journal: debe registrar PENDING de forma duradera antes de tocar filesystem
                     try:
-                        journal.record_pending(op_id, track.filepath, mode, target_path=resolved_target_path)
+                        journal.record_pending(
+                            op_id,
+                            track.filepath,
+                            mode,
+                            target_path=resolved_target_path,
+                            target_tmp_path=temporary_target_path,
+                            expected_sha256=expected_sha256
+                        )
                     except Exception as j_err:
                         logs.append(
                             f"Error crítico de seguridad: Fallo al persistir PENDING en journal para {track.filename}: {j_err}. "
@@ -460,7 +594,14 @@ class FileOperationService:
                     log_msg = ""
                     try:
                         if mode == "backup":
-                            shutil.move(track.filepath, resolved_target_path)
+                            _copy_backup_verified(
+                                track.filepath,
+                                resolved_target_path,
+                                temporary_target_path,
+                                expected_sha256
+                            )
+                            journal.update_state(op_id, "TARGET_VERIFIED")
+                            os.remove(track.filepath)
                             log_msg = f"Movido a backup: {track.filename} -> {os.path.basename(resolved_target_path)}"
                             action_ok = True
 
@@ -494,6 +635,13 @@ class FileOperationService:
                             continue
 
                     except Exception as e:
+                        if mode == "backup" and os.path.isfile(track.filepath):
+                            for artifact in (temporary_target_path, resolved_target_path):
+                                if artifact and os.path.isfile(artifact):
+                                    try:
+                                        os.remove(artifact)
+                                    except OSError:
+                                        pass
                         logs.append(f"Error procesando {track.filename}: {e}")
                         failed += 1
                         action_ok = False

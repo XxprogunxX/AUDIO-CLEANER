@@ -272,7 +272,10 @@ def cluster_duplicates(
                     DuplicateType.POSSIBLE_DUPLICATE, DuplicateType.ACOUSTIC_DUPLICATE,
                     DuplicateType.EXACT_AUDIO, DuplicateType.EXACT_HASH) if k in kinds)
         review = any(r.requires_manual_review for r in reports) or kind in (
-            DuplicateType.LOW_CONFIDENCE_REVIEW, DuplicateType.POSSIBLE_DUPLICATE)
+            DuplicateType.LOW_CONFIDENCE_REVIEW,
+            DuplicateType.POSSIBLE_DUPLICATE,
+            DuplicateType.ACOUSTIC_DUPLICATE,
+        )
         best_component = exact.find(best.filepath)
         verified_pairs = []
         for track in members[1:]:
@@ -282,9 +285,11 @@ def cluster_duplicates(
             else:
                 review = True
         reason = f"Mejor calidad detectada ({best.quality_score:.0f} pts)"
-        if review and kind in strong:
+        if review and kind in (DuplicateType.EXACT_HASH, DuplicateType.EXACT_AUDIO):
             kind = DuplicateType.POSSIBLE_DUPLICATE
             reason += "; falta coincidencia directa con todas las copias: revisión requerida"
+        elif kind == DuplicateType.ACOUSTIC_DUPLICATE:
+            reason += "; coincidencia acústica: revisión manual obligatoria"
         for track in members:
             track.action = (FileAction.UNSET if review else
                             FileAction.KEEP if track is best else FileAction.DELETE)

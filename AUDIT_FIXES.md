@@ -30,6 +30,16 @@ Pruebas añadidas: aristas negativas o ausentes entre candidatos y copia conserv
 
 El smoke test genera tres WAV, incluyendo una copia binaria y otra con metadatos distintos. Hace dos escaneos para probar la caché, verifica clasificación EXACT_AUDIO y comprueba byte por byte que dry-run no modifica archivos. Con `--exe`, elimina FFmpeg y FFprobe externos del PATH del proceso para comprobar la autonomía del paquete.
 
+## Endurecimiento posterior con pruebas adversarias
+
+Una segunda evaluación encontró que Chromaprint puede dar una coincidencia muy alta a archivos que comparten el fragmento analizado, aunque el resto sea distinto. Por esa razón, las coincidencias `ACOUSTIC_DUPLICATE` ahora siempre requieren revisión manual y nunca reciben acciones automáticas. `EXACT_HASH` y `EXACT_AUDIO`, que tienen verificación completa, conservan la selección automática.
+
+El modo backup ahora aplica la misma revalidación previa que papelera y eliminación: si el origen o la copia conservada cambió después del escaneo, la operación se bloquea. La copia se escribe primero con un nombre privado, se sincroniza, se verifica por SHA-256 y se publica antes de retirar el origen. El journal guarda el hash esperado y la ruta temporal. En el arranque, una copia parcial se retira si el origen sigue presente; si el origen ya no está, solo un destino con el hash esperado permite completar la sincronización. Los registros antiguos sin hash quedan en estado de fallo para inspección manual.
+
+La evaluación adversaria obtuvo cero selecciones automáticas en ocho casos distintos, incluidos finales sustituidos, silencio añadido, edición intermedia e introducción diferente. Las tres equivalencias exactas sí quedaron seleccionadas. Las dos transcodificaciones MP3 se detectaron acústicamente y quedaron protegidas para revisión.
+
+Se inyectaron cierres reales de procesos en cuatro puntos de backup y cuatro puntos de eliminación permanente, además de unidad desconectada simulada, archivo cambiado en los tres modos, copia interrumpida y backup corrompido. Los 14 casos recuperaron un estado seguro y coherente.
+
 ## Compilar y comprobar el ejecutable
 
 ```powershell
@@ -40,6 +50,8 @@ El smoke test genera tres WAV, incluyendo una copia binaria y otra con metadatos
 
 El build_exe.bat actualizado utiliza dependencias fijadas, comprueba los códigos de salida y valida el paquete; ya no borra recursivamente las carpetas de compilación.
 
+La validación no escribe resultados en el árbol del proyecto. También desactiva la caché de pytest y aísla `APPDATA`, `LOCALAPPDATA`, `TEMP` y `TMP`; esto evita bloqueos al finalizar cuando la instalación está dentro de una carpeta sincronizada por OneDrive.
+
 ## Límites y operación
 
 - Los límites de candidatos pueden omitir coincidencias; la aplicación lo informa como cobertura incompleta. El contador de candidatos descartados cuenta apariciones, no necesariamente parejas únicas.
@@ -49,8 +61,11 @@ El build_exe.bat actualizado utiliza dependencias fijadas, comprueba los código
 
 ## Resultado verificado en esta revisión
 
-- Suite completa: **212 pruebas aprobadas y 9 subcasos aprobados**.
+- Suite completa tras el segundo endurecimiento: **218 pruebas aprobadas y 11 subcasos aprobados**.
 - Smoke test desde código: dos escaneos aprobados, incluida reutilización de caché y dry-run.
 - Compilación PyInstaller: completada correctamente.
 - Inspección del paquete: FFmpeg, FFprobe y fpcalc presentes; sin bases de datos.
 - Smoke test del ejecutable con PATH restringido: dos escaneos aprobados, clasificación EXACT_AUDIO y archivos intactos.
+- Auditoría de 30 dependencias: **0 vulnerabilidades conocidas reportadas por pip-audit**.
+- Muestra controlada de cinco canciones reales y 20 casos derivados: **0 selecciones automáticas inseguras**; los originales de `F:\` no se modificaron.
+- Pruebas de recuperación ante cierres y fallos: **14 de 14 casos aprobados**.

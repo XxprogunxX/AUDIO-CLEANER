@@ -237,7 +237,7 @@ class DuplicateGroup:
             pairs = []
         # Historical acoustic sessions have no evidence tying the retained copy
         # to each deletion. Require new review rather than replaying old choices.
-        if ptype == DuplicateType.ACOUSTIC_DUPLICATE and not pairs:
+        if ptype == DuplicateType.ACOUSTIC_DUPLICATE:
             req_review = True
             for track in tracks:
                 if track.action == FileAction.DELETE:
