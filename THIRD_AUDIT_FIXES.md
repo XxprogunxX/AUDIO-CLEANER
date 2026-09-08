@@ -14,7 +14,7 @@ Los siete hallazgos de la tercera auditoría quedaron corregidos y cubiertos por
 
 ## Evidencia de aceptación
 
-- Suite completa: **227 pruebas aprobadas y 11 subcasos parametrizados aprobados**.
+- Suite completa: **230 pruebas aprobadas y 11 subcasos parametrizados aprobados**.
 - Reproducciones de los ocho síntomas observables de la auditoría: **0 fallas reproducidas** después de la corrección.
 - Smoke test desde código: tres escaneos, cuatro archivos, caché y simulación aprobados; transcode lossless sospechoso detectado.
 - Ejecutable PyInstaller reconstruido e inspeccionado: FFmpeg, FFprobe y Chromaprint incluidos; ninguna base de datos de usuario incluida.
@@ -24,3 +24,9 @@ Los siete hallazgos de la tercera auditoría quedaron corregidos y cubiertos por
 ## Límites que aún requieren evidencia de campo
 
 El evaluador ya mide recall del pipeline completo, pero una cifra representativa necesita un corpus etiquetado de música real. Las coincidencias acústicas siguen exigiendo revisión humana y no reciben borrado automático. La distribución tampoco tiene firma Authenticode porque requiere un certificado de publicación controlado por el propietario.
+
+## Corrección posterior: buckets acústicos degenerados
+
+La indexación ya no genera tokens acústicos para huellas largas con menos de ocho palabras distintas, porque esa señal no permite discriminar pistas con fiabilidad. Los buckets que superan 500 miembros dejaron de truncarse por orden de ruta: ahora todos sus miembros participan en vecindarios dispersos, deterministas y acotados, ordenados por duración y proyecciones gruesas de la huella. Los tokens raros se procesan primero y la evidencia de buckets saturados necesita más corroboración.
+
+El filtro de diferencia de duración de 90 segundos se aplica antes de enviar pares a los workers. La cobertura registra cuántos pares descartó ese filtro y cuántas huellas carecían de información suficiente. En la reproducción adversaria de 1,000 pistas, el caso pasó de 124,750 comparaciones a **0 comparaciones en 0.23 segundos**. Una prueba separada confirmó que una pareja situada después del antiguo límite de 500 sí llega al comparador, con menos de 5,000 comparaciones totales para 520 pistas.

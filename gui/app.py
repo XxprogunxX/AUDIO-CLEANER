@@ -410,8 +410,17 @@ class AudioDuplicateDetectorApp(QMainWindow):
             QMessageBox.warning(self, "Cobertura incompleta",
                 f"El análisis no cubrió toda la biblioteca. Archivos fallidos: {stats.files_failed}; "
                 f"bloques fallidos: {stats.worker_failures}; "
-                f"coincidencias candidatas omitidas: {stats.candidate_pairs_dropped}. "
+                f"coincidencias candidatas omitidas: {stats.candidate_pairs_dropped}; "
+                f"huellas con información insuficiente: "
+                f"{getattr(stats, 'low_information_fingerprints', 0)}. "
                 "Los resultados pueden omitir duplicados.")
+        elif getattr(stats, "low_information_fingerprints", 0):
+            QMessageBox.information(
+                self, "Huellas acústicas no discriminantes",
+                f"{stats.low_information_fingerprints} archivo(s) produjeron huellas demasiado "
+                "repetitivas para una comparación acústica fiable. Se omitieron de esa etapa; "
+                "la comprobación de duplicados exactos por SHA-256 y PCM sí se realizó."
+            )
         self._save_current_session()
 
         # Update all views data

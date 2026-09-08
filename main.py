@@ -89,7 +89,13 @@ def run_cli_mode(args):
             exit_code = 3
             print(f"ADVERTENCIA: cobertura incompleta. Archivos fallidos: {scanner.stats.files_failed}; "
                   f"bloques fallidos: {scanner.stats.worker_failures}; "
-                  f"coincidencias candidatas descartadas: {scanner.stats.candidate_pairs_dropped}.")
+                  f"coincidencias candidatas descartadas: {scanner.stats.candidate_pairs_dropped}; "
+                  f"huellas con información insuficiente: "
+                  f"{getattr(scanner.stats, 'low_information_fingerprints', 0)}.")
+        low_information = getattr(scanner.stats, "low_information_fingerprints", 0)
+        if low_information:
+            print(f"NOTA: {low_information} huella(s) acústica(s) repetitiva(s) no se usaron "
+                  "para proponer coincidencias; los hashes exactos y PCM sí se comprobaron.")
         print(f"Total archivos analizados: {scanner.stats.files_scanned}")
         print(f"Duplicados exactos: {scanner.stats.exact_duplicates_count}")
         print(f"Duplicados acusticos: {scanner.stats.acoustic_duplicates_count}")

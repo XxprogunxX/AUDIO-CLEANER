@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -17,9 +18,14 @@ from core.clustering import cluster_duplicates
 from core.comparator import compare_tracks
 import core.file_manager as fm
 from core.file_manager import FileOperationService, OperationJournal, OperationResult, OperationStatus
-from core.models import AudioTrack, DuplicateGroup, DuplicateType, FileAction, ScanCoverageReport
+from core.models import (AudioTrack, DuplicateGroup, DuplicateType, EvidenceReport,
+                         FileAction, ScanCoverageReport)
 from core.quality_analyzer import _probe_audio_segment, evaluate_track_quality
 from core.spectral_types import SpectralAssessment
+
+
+def _local_pool(**kwargs):
+    return ThreadPoolExecutor(max_workers=kwargs["max_workers"])
 
 
 def _sha(data: bytes) -> str:
@@ -112,6 +118,60 @@ class TestDetectionAndQualityCorrections(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertGreaterEqual(coverage.candidate_pairs_retained, 1)
         self.assertTrue(groups[0].requires_manual_review)
+
+    def test_long_low_information_fingerprints_do_not_create_quadratic_work(self):
+        fingerprint = [0x101, 0x202, 0x303, 0x404] * 75
+        tracks = [AudioTrack(filepath=f"track_{index:04}.wav", duration=60,
+                             fingerprint_raw=fingerprint) for index in range(1000)]
+        with patch("core.clustering.ProcessPoolExecutor",
+                   side_effect=AssertionError("no comparisons expected")):
+            groups, coverage = cluster_duplicates(tracks, return_coverage=True)
+        self.assertEqual(groups, [])
+        self.assertEqual(coverage.candidate_pairs_generated, 0)
+        self.assertEqual(coverage.candidate_pairs_retained, 0)
+        self.assertEqual(coverage.actual_comparisons, 0)
+        self.assertEqual(coverage.low_information_fingerprints, 1000)
+        self.assertTrue(coverage.is_complete)
+
+    def test_sparse_oversized_bucket_includes_tracks_after_old_prefix(self):
+        fingerprint = list(range(1, 13)) * 25
+        tracks = [AudioTrack(filepath=f"track_{index:04}.wav", duration=60,
+                             fingerprint_raw=fingerprint) for index in range(518)]
+        tracks.extend([
+            AudioTrack(filepath="zz_target_A.wav", duration=60, fingerprint_raw=fingerprint),
+            AudioTrack(filepath="zz_target_B.wav", duration=60, fingerprint_raw=fingerprint),
+        ])
+        seen_target = False
+
+        def compare(a, b, config=None):
+            nonlocal seen_target
+            is_target = {a.filepath, b.filepath} == {"zz_target_A.wav", "zz_target_B.wav"}
+            seen_target = seen_target or is_target
+            kind = DuplicateType.ACOUSTIC_DUPLICATE if is_target else DuplicateType.NO_MATCH
+            return EvidenceReport(a.filepath, b.filepath, kind, 98.0,
+                                  requires_manual_review=is_target)
+
+        with patch("core.clustering.ProcessPoolExecutor", side_effect=_local_pool), \
+             patch("core.clustering.compare_tracks", side_effect=compare):
+            groups, coverage = cluster_duplicates(tracks, return_coverage=True)
+        self.assertTrue(seen_target)
+        self.assertEqual(len(groups), 1)
+        self.assertLess(coverage.actual_comparisons, 5000)
+        self.assertGreater(coverage.oversized_buckets, 0)
+        self.assertTrue(coverage.is_approximate)
+
+    def test_duration_prefilter_avoids_worker_dispatch(self):
+        fingerprint = list(range(1, 30))
+        tracks = [
+            AudioTrack(filepath="short.wav", duration=60, fingerprint_raw=fingerprint),
+            AudioTrack(filepath="long.wav", duration=151, fingerprint_raw=fingerprint),
+        ]
+        with patch("core.clustering.ProcessPoolExecutor",
+                   side_effect=AssertionError("duration mismatch must not reach workers")):
+            groups, coverage = cluster_duplicates(tracks, return_coverage=True)
+        self.assertEqual(groups, [])
+        self.assertEqual(coverage.candidate_pairs_retained, 0)
+        self.assertGreater(coverage.candidate_pairs_prefiltered, 0)
 
     def test_spectral_probe_uses_resolved_binary(self):
         with patch("core.quality_analyzer.get_ffmpeg_path", return_value="C:/bundle/ffmpeg.exe") as resolver:

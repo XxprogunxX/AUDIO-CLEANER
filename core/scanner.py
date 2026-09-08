@@ -500,7 +500,9 @@ class AudioScanner:
         coverage = getattr(groups, "coverage", None)
         if coverage is not None:
             for name in ("candidate_pairs_generated", "candidate_pairs_retained",
-                         "candidate_pairs_dropped", "oversized_buckets", "worker_failures"):
+                         "candidate_pairs_dropped", "candidate_pairs_prefiltered",
+                         "oversized_buckets", "low_information_fingerprints",
+                         "worker_failures"):
                 setattr(self.stats, name, getattr(coverage, name))
             self.stats.is_complete = self.stats.is_complete and coverage.is_complete
             self.stats.is_approximate = self.stats.is_approximate or coverage.is_approximate

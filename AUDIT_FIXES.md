@@ -61,7 +61,7 @@ La validación no escribe resultados en el árbol del proyecto. También desacti
 
 ## Resultado verificado en esta revisión
 
-- Suite completa tras la tercera auditoría: **227 pruebas aprobadas y 11 subcasos aprobados**.
+- Suite completa tras la corrección de buckets degenerados: **230 pruebas aprobadas y 11 subcasos aprobados**.
 - Smoke test desde código: dos escaneos aprobados, incluida reutilización de caché y dry-run.
 - Compilación PyInstaller: completada correctamente.
 - Inspección del paquete: FFmpeg, FFprobe y fpcalc presentes; sin bases de datos.
