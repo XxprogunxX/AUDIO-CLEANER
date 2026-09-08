@@ -69,9 +69,30 @@ class DuplicateGroupList(list):
         self.coverage = coverage or ScanCoverageReport()
 
 
+_LOW_INFORMATION_MIN_FRAMES = 40
+_LOW_INFORMATION_MIN_UNIQUE_WORDS = 8
+_MAX_ACOUSTIC_DURATION_DIFF = 90.0
+_OVERSIZED_BUCKET_NEIGHBORS = 4
+
+
+def _fingerprint_values(raw_fingerprint):
+    return [int(value) & 0xFFFFFFFF
+            for value in (raw_fingerprint or [])[:600] if value]
+
+
+def _is_low_information_fingerprint(raw_fingerprint) -> bool:
+    """Reject long fingerprints dominated by a handful of repeated words."""
+    values = _fingerprint_values(raw_fingerprint)
+    return (len(values) >= _LOW_INFORMATION_MIN_FRAMES and
+            len(set(values)) < _LOW_INFORMATION_MIN_UNIQUE_WORDS)
+
+
 def _fingerprint_candidate_tokens(raw_fingerprint, exact_limit: int = 600, fuzzy_limit: int = 150):
     """Return bounded exact tokens plus tolerant hashes of short word windows."""
-    values = [int(value) & 0xFFFFFFFF for value in (raw_fingerprint or [])[:600] if value]
+    values = _fingerprint_values(raw_fingerprint)
+    if (len(values) >= _LOW_INFORMATION_MIN_FRAMES and
+            len(set(values)) < _LOW_INFORMATION_MIN_UNIQUE_WORDS):
+        return []
     exact_tokens = set()
     for value in values[:300]:
         exact_tokens.add(("word", value))
@@ -99,6 +120,51 @@ def _fingerprint_candidate_tokens(raw_fingerprint, exact_limit: int = 600, fuzzy
             fuzzy_tokens.add(("fuzzy_segment", segment_index, byte_index, digest))
     return (sorted(exact_tokens, key=repr)[:exact_limit] +
             sorted(fuzzy_tokens, key=repr)[:fuzzy_limit])
+
+
+def _duration_compatible(a: AudioTrack, b: AudioTrack) -> bool:
+    """Apply the comparator's hard duration rejection before worker dispatch."""
+    if a.duration > 0.0 and b.duration > 0.0:
+        return abs(a.duration - b.duration) <= _MAX_ACOUSTIC_DURATION_DIFF
+    return True
+
+
+def _fingerprint_projection(track: AudioTrack, mask: int) -> Tuple[int, ...]:
+    """Cheap locality key; similar fingerprints often share a coarse projection."""
+    values = _fingerprint_values(track.fingerprint_raw)
+    if not values:
+        return ()
+    step = max(1, len(values) // 12)
+    return tuple(value & mask for value in values[::step][:12])
+
+
+def _sparse_oversized_bucket_pairs(bucket, acoustic_tracks, profile_cache):
+    """Cover every saturated-bucket member with bounded local neighborhoods."""
+    def profile(idx):
+        cached = profile_cache.get(idx)
+        if cached is None:
+            track = acoustic_tracks[idx]
+            cached = (
+                round(max(0.0, track.duration), 1),
+                _fingerprint_projection(track, 0xFFFFFF00),
+                _fingerprint_projection(track, 0xFFFFFFF0),
+                track.filepath,
+            )
+            profile_cache[idx] = cached
+        return cached
+
+    orderings = (
+        lambda idx: (profile(idx)[0], profile(idx)[1], profile(idx)[3]),
+        lambda idx: (profile(idx)[2], profile(idx)[0], profile(idx)[3]),
+    )
+    pairs = set()
+    for ordering in orderings:
+        ordered = sorted(bucket, key=ordering)
+        for offset in range(1, _OVERSIZED_BUCKET_NEIGHBORS + 1):
+            for position in range(len(ordered) - offset):
+                a, b = ordered[position], ordered[position + offset]
+                pairs.add((a, b) if a < b else (b, a))
+    return sorted(pairs)
 
 
 def cluster_duplicates(
@@ -194,36 +260,54 @@ def cluster_duplicates(
     for idx, track in enumerate(acoustic_tracks):
         if cancelled():
             return finish([])
-        for token in _fingerprint_candidate_tokens(track.fingerprint_raw):
+        tokens = _fingerprint_candidate_tokens(track.fingerprint_raw)
+        if track.fingerprint_raw and not tokens and _is_low_information_fingerprint(track.fingerprint_raw):
+            coverage.low_information_fingerprints += 1
+        for token in tokens:
             shingle_index[token].append(idx)
 
     if progress_callback:
         progress_callback(0.0, 0, 0, "Filtrando coincidencias acústicas...")
-    pair_hits = {}
-    for shingle in sorted(shingle_index):
+    # Normal buckets contribute two evidence points; sparse oversized buckets
+    # contribute one. Six points preserve the former three-hit requirement while
+    # demanding more corroboration from saturated, less-informative tokens.
+    pair_scores = {}
+    profile_cache = {}
+    # Rare tokens are processed first so high-information evidence receives the
+    # bounded pair budget before common tokens.
+    ordered_buckets = sorted(shingle_index.items(), key=lambda item: (len(item[1]), repr(item[0])))
+    for shingle, bucket in ordered_buckets:
         if cancelled():
             return finish([])
-        bucket = shingle_index[shingle]
-        if len(bucket) > max_bucket_size:
+        oversized = len(bucket) > max_bucket_size
+        if oversized:
             coverage.oversized_buckets += 1
             coverage.is_approximate = True
-            coverage.candidate_pairs_dropped += (len(bucket) * (len(bucket)-1) -
-                max_bucket_size * (max_bucket_size-1)) // 2
-            bucket = bucket[:max_bucket_size]
-        for a, b in itertools.combinations(bucket, 2):
+            bucket_pairs = _sparse_oversized_bucket_pairs(bucket, acoustic_tracks, profile_cache)
+            coverage.candidate_pairs_dropped += max(
+                0, len(bucket) * (len(bucket) - 1) // 2 - len(bucket_pairs)
+            )
+        else:
+            bucket_pairs = itertools.combinations(bucket, 2)
+        score_increment = 1 if oversized else 2
+        for a, b in bucket_pairs:
+            if not _duration_compatible(acoustic_tracks[a], acoustic_tracks[b]):
+                coverage.candidate_pairs_prefiltered += 1
+                coverage.candidate_pairs_dropped += 1
+                continue
             coverage.candidate_pairs_generated += 1
             pair = (a, b)
-            if pair in pair_hits:
-                pair_hits[pair] += 1
-            elif len(pair_hits) < max_pair_hits:
-                pair_hits[pair] = 1
+            if pair in pair_scores:
+                pair_scores[pair] += score_increment
+            elif len(pair_scores) < max_pair_hits:
+                pair_scores[pair] = score_increment
             else:
                 # Hard admission cap, independent of hit counts. Iteration is
                 # deterministic; dropped counts are candidate occurrences.
                 coverage.candidate_pairs_dropped += 1
                 coverage.is_approximate = True
-    candidates = sorted(pair for pair, hits in pair_hits.items() if hits >= 3)
-    del pair_hits, shingle_index
+    candidates = sorted(pair for pair, score in pair_scores.items() if score >= 6)
+    del pair_scores, shingle_index
     coverage.candidate_pairs_retained = len(candidates)
     total = len(candidates)
     if progress_callback:

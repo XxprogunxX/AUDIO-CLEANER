@@ -306,7 +306,9 @@ class ScanCoverageReport:
     candidate_pairs_generated: int = 0
     candidate_pairs_retained: int = 0
     candidate_pairs_dropped: int = 0
+    candidate_pairs_prefiltered: int = 0
     oversized_buckets: int = 0
+    low_information_fingerprints: int = 0
     worker_failures: int = 0
     actual_comparisons: int = 0
     scan_status: str = "SUCCESS"  # SUCCESS, CANCELLED, FAILED
@@ -320,7 +322,9 @@ class ScanStats:
     candidate_pairs_generated: int = 0
     candidate_pairs_retained: int = 0
     candidate_pairs_dropped: int = 0
+    candidate_pairs_prefiltered: int = 0
     oversized_buckets: int = 0
+    low_information_fingerprints: int = 0
     worker_failures: int = 0
     files_scanned: int = 0
     files_from_cache: int = 0
