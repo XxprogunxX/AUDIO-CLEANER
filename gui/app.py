@@ -407,19 +407,52 @@ class AudioDuplicateDetectorApp(QMainWindow):
         self.scanner_view.finish_scanning_ui(len(self.all_groups))
         stats = self.scanner.stats
         if not stats.is_complete:
+            problems = []
+            if stats.files_failed:
+                problems.append(f"Archivos que no pudieron leerse: {stats.files_failed}")
+            if stats.worker_failures:
+                problems.append(f"Bloques de comparación fallidos: {stats.worker_failures}")
+            if stats.candidate_pairs_dropped:
+                problems.append(
+                    f"Candidatos descartados por el límite de memoria: {stats.candidate_pairs_dropped:,}"
+                )
+            notes = []
+            if getattr(stats, "files_skipped_invalid", 0):
+                notes.append(
+                    f"Archivos vacíos o inválidos ignorados: {stats.files_skipped_invalid}"
+                )
+            if getattr(stats, "low_information_fingerprints", 0):
+                notes.append(
+                    f"Huellas acústicas no discriminantes: {stats.low_information_fingerprints} "
+                    "(los hashes exactos y PCM sí fueron comprobados)"
+                )
+            details = getattr(stats, "failed_file_details", [])[:5]
+            detail_text = ""
+            if details:
+                detail_text = "\n\nPrimeros archivos afectados:\n" + "\n".join(
+                    f"• {item.get('filepath', 'Ruta desconocida')} — {item.get('reason', 'Error')}"
+                    for item in details
+                )
             QMessageBox.warning(self, "Cobertura incompleta",
-                f"El análisis no cubrió toda la biblioteca. Archivos fallidos: {stats.files_failed}; "
-                f"bloques fallidos: {stats.worker_failures}; "
-                f"coincidencias candidatas omitidas: {stats.candidate_pairs_dropped}; "
-                f"huellas con información insuficiente: "
-                f"{getattr(stats, 'low_information_fingerprints', 0)}. "
-                "Los resultados pueden omitir duplicados.")
-        elif getattr(stats, "low_information_fingerprints", 0):
+                "El análisis terminó, pero no pudo cubrir algunos archivos.\n\n" +
+                "\n".join(problems + notes) + detail_text +
+                "\n\nLos resultados solo pueden omitir duplicados de los archivos indicados.")
+        elif (getattr(stats, "low_information_fingerprints", 0) or
+              getattr(stats, "files_skipped_invalid", 0)):
+            notes = []
+            if getattr(stats, "files_skipped_invalid", 0):
+                notes.append(
+                    f"• {stats.files_skipped_invalid} archivo(s) vacío(s) o inválido(s) fueron ignorados."
+                )
+            if getattr(stats, "low_information_fingerprints", 0):
+                notes.append(
+                    f"• {stats.low_information_fingerprints} huella(s) repetitiva(s) no se usaron "
+                    "para proponer coincidencias acústicas."
+                )
             QMessageBox.information(
-                self, "Huellas acústicas no discriminantes",
-                f"{stats.low_information_fingerprints} archivo(s) produjeron huellas demasiado "
-                "repetitivas para una comparación acústica fiable. Se omitieron de esa etapa; "
-                "la comprobación de duplicados exactos por SHA-256 y PCM sí se realizó."
+                self, "Escaneo completado con elementos ignorados",
+                "\n".join(notes) +
+                "\n\nLa comprobación de duplicados exactos por SHA-256 y PCM sí se completó."
             )
         self._save_current_session()
 

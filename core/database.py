@@ -163,6 +163,13 @@ class Database:
                 );
             """)
             self._migrate_schema(conn)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pcm_identity_cache (
+                    sha256 TEXT PRIMARY KEY NOT NULL,
+                    identity TEXT NOT NULL,
+                    checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
 
     def _migrate_schema(self, conn: sqlite3.Connection):
         """
@@ -442,6 +449,40 @@ class Database:
             cursor.execute("SELECT COUNT(*) FROM tracks")
             row = cursor.fetchone()
             return row[0] if row else 0
+
+    def get_pcm_identities(self, sha256_values: List[str]) -> Dict[str, str]:
+        """Return cached full PCM identities keyed by immutable file SHA-256."""
+        values = sorted({value for value in sha256_values if value})
+        if not values:
+            return {}
+        result = {}
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            for index in range(0, len(values), 500):
+                chunk = values[index:index + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor.execute(
+                    f"SELECT sha256, identity FROM pcm_identity_cache "
+                    f"WHERE sha256 IN ({placeholders})",
+                    chunk,
+                )
+                result.update(cursor.fetchall())
+        return result
+
+    def upsert_pcm_identities(self, identities: Dict[str, str]):
+        """Persist successful identities; failed or empty computations are not cached."""
+        rows = [(sha256, identity) for sha256, identity in identities.items()
+                if sha256 and identity]
+        if not rows:
+            return
+        with self._get_connection() as conn:
+            conn.executemany("""
+                INSERT INTO pcm_identity_cache (sha256, identity, checked_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(sha256) DO UPDATE SET
+                    identity = excluded.identity,
+                    checked_at = CURRENT_TIMESTAMP
+            """, rows)
 
     def get_database_size_bytes(self) -> int:
         """Returns the file size of the SQLite database in bytes."""

@@ -54,14 +54,14 @@ La validación no escribe resultados en el árbol del proyecto. También desacti
 
 ## Límites y operación
 
-- Los límites de candidatos pueden omitir coincidencias; la aplicación lo informa como cobertura incompleta. El contador de candidatos descartados cuenta apariciones, no necesariamente parejas únicas.
+- La cobertura incompleta se reserva para archivos realmente inaccesibles, fallos de workers o candidatos rechazados por el límite de memoria. Las combinaciones teóricas de tokens saturados y los rechazos deliberados por duración tienen métricas separadas y no se presentan como canciones omitidas.
 - Las pruebas sintéticas y de regresión no sustituyen una evaluación de precisión con música representativa ni pruebas prolongadas en NAS o bibliotecas masivas.
 - La cancelación del scanner es cooperativa; puede esperar a que los trabajos ya iniciados terminen. Las operaciones de archivos no se interrumpen desde el diálogo para evitar dejar sincronizaciones a medias.
 - No se añadieron servicios en la nube, telemetría, firma de código ni un actualizador automático.
 
 ## Resultado verificado en esta revisión
 
-- Suite completa tras la corrección de buckets degenerados: **230 pruebas aprobadas y 11 subcasos aprobados**.
+- Suite completa tras corregir el diagnóstico de cobertura: **238 pruebas aprobadas y 11 subcasos aprobados**.
 - Smoke test desde código: dos escaneos aprobados, incluida reutilización de caché y dry-run.
 - Compilación PyInstaller: completada correctamente.
 - Inspección del paquete: FFmpeg, FFprobe y fpcalc presentes; sin bases de datos.

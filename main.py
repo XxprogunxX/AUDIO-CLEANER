@@ -50,10 +50,22 @@ def main():
         default=None,
         help="Ruta para exportar los resultados en formato CSV."
     )
+    parser.add_argument(
+        "--gui-smoke-test",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
     args = parser.parse_args()
 
-    if args.cli:
+    if args.gui_smoke_test:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6.QtWidgets import QApplication
+        from gui.app import run_gui  # noqa: F401 - validates the complete GUI import graph
+        app = QApplication.instance() or QApplication([])
+        app.quit()
+        return 0
+    elif args.cli:
         return run_cli_mode(args)
     else:
         from gui.app import run_gui
@@ -89,9 +101,14 @@ def run_cli_mode(args):
             exit_code = 3
             print(f"ADVERTENCIA: cobertura incompleta. Archivos fallidos: {scanner.stats.files_failed}; "
                   f"bloques fallidos: {scanner.stats.worker_failures}; "
-                  f"coincidencias candidatas descartadas: {scanner.stats.candidate_pairs_dropped}; "
-                  f"huellas con información insuficiente: "
-                  f"{getattr(scanner.stats, 'low_information_fingerprints', 0)}.")
+                  f"candidatos descartados por límite de memoria: "
+                  f"{scanner.stats.candidate_pairs_dropped}.")
+            for detail in getattr(scanner.stats, "failed_file_details", [])[:10]:
+                print(f"  - {detail.get('filepath', 'Ruta desconocida')}: "
+                      f"{detail.get('reason', 'Error')}")
+        invalid = getattr(scanner.stats, "files_skipped_invalid", 0)
+        if invalid:
+            print(f"NOTA: {invalid} archivo(s) vacío(s) o inválido(s) se ignoraron.")
         low_information = getattr(scanner.stats, "low_information_fingerprints", 0)
         if low_information:
             print(f"NOTA: {low_information} huella(s) acústica(s) repetitiva(s) no se usaron "

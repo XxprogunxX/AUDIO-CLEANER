@@ -37,6 +37,7 @@ class AudioTrack:
     analysis_signature: str = ""
     sha256: str = ""
     audio_hash: str = ""
+    full_pcm_identity: str = ""  # Runtime/cache identity; omitted from sessions
     duration: float = 0.0
     format: str = ""
     bitrate: int = 0          # in kbps
@@ -307,6 +308,7 @@ class ScanCoverageReport:
     candidate_pairs_retained: int = 0
     candidate_pairs_dropped: int = 0
     candidate_pairs_prefiltered: int = 0
+    ambiguous_pair_occurrences_ignored: int = 0
     oversized_buckets: int = 0
     low_information_fingerprints: int = 0
     worker_failures: int = 0
@@ -323,12 +325,19 @@ class ScanStats:
     candidate_pairs_retained: int = 0
     candidate_pairs_dropped: int = 0
     candidate_pairs_prefiltered: int = 0
+    ambiguous_pair_occurrences_ignored: int = 0
     oversized_buckets: int = 0
     low_information_fingerprints: int = 0
+    pcm_identity_files: int = 0
+    pcm_identity_cached: int = 0
+    pcm_identity_failures: int = 0
     worker_failures: int = 0
     files_scanned: int = 0
     files_from_cache: int = 0
     files_failed: int = 0
+    files_skipped_invalid: int = 0
+    system_directories_skipped: int = 0
+    failed_file_details: List[Dict[str, str]] = field(default_factory=list)
     exact_duplicates_count: int = 0
     acoustic_duplicates_count: int = 0
     possible_duplicates_count: int = 0

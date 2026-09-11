@@ -87,14 +87,24 @@ def _is_low_information_fingerprint(raw_fingerprint) -> bool:
             len(set(values)) < _LOW_INFORMATION_MIN_UNIQUE_WORDS)
 
 
-def _fingerprint_candidate_tokens(raw_fingerprint, exact_limit: int = 600, fuzzy_limit: int = 150):
-    """Return bounded exact tokens plus tolerant hashes of short word windows."""
+def _fingerprint_candidate_tokens(raw_fingerprint, exact_limit: int = 96, fuzzy_limit: int = 32):
+    """Return uniformly sampled word tokens plus tolerant segment hashes."""
     values = _fingerprint_values(raw_fingerprint)
     if (len(values) >= _LOW_INFORMATION_MIN_FRAMES and
             len(set(values)) < _LOW_INFORMATION_MIN_UNIQUE_WORDS):
         return []
     exact_tokens = set()
-    for value in values[:300]:
+    source = values[:300]
+    sample_count = max(1, exact_limit // 2)
+    if sample_count == 1 and source:
+        sampled = [source[0]]
+    elif len(source) > sample_count:
+        positions = [(index * (len(source) - 1)) // (sample_count - 1)
+                     for index in range(sample_count)]
+        sampled = [source[position] for position in positions]
+    else:
+        sampled = source
+    for value in sampled:
         exact_tokens.add(("word", value))
         exact_tokens.add(("low_nibble", value & 0xFFFFFFF0))
 
@@ -170,7 +180,8 @@ def _sparse_oversized_bucket_pairs(bucket, acoustic_tracks, profile_cache):
 def cluster_duplicates(
     tracks: List[AudioTrack], progress_callback=None, is_cancelled=None,
     config: Optional[DetectionConfig] = None, max_bucket_size: int = 500,
-    max_pair_hits: int = 500_000, return_coverage: bool = False
+    max_pair_hits: int = 500_000, return_coverage: bool = False,
+    pcm_identities: Optional[Dict[str, str]] = None,
 ) -> Union[List[DuplicateGroup], Tuple[List[DuplicateGroup], ScanCoverageReport]]:
     """Group candidates with bounded work and evidence to the retained copy.
 
@@ -189,7 +200,8 @@ def cluster_duplicates(
 
     def finish(items):
         coverage.is_complete = (coverage.scan_status != "CANCELLED" and
-                                not coverage.is_approximate and not coverage.worker_failures)
+                                not coverage.worker_failures and
+                                not coverage.candidate_pairs_dropped)
         return (items, coverage) if return_coverage else DuplicateGroupList(items, coverage)
 
     def cancelled():
@@ -209,6 +221,8 @@ def cluster_duplicates(
             is_exact_hash=kind == DuplicateType.EXACT_HASH,
             is_exact_audio=kind == DuplicateType.EXACT_AUDIO)
 
+    if progress_callback:
+        progress_callback(0.0, 0, len(tracks), "Agrupando hashes exactos...")
     sha_representatives = {}
     for track in tracks:
         if cancelled():
@@ -226,29 +240,47 @@ def cluster_duplicates(
         if track.audio_hash and component not in seen_exact:
             pcm_groups[track.audio_hash].append(track)
             seen_exact.add(component)
-    from core.fingerprint import verify_full_normalized_pcm_match
-    pcm_checks = 0
-    for bucket in pcm_groups.values():
-        representatives = []
-        for track in bucket:
-            if cancelled():
-                return finish([])
-            matched = False
-            for rep in representatives:
+    if pcm_identities is not None:
+        # The scanner precomputes each complete PCM stream once and caches it by
+        # immutable file SHA. Grouping is then linear and performs no media I/O.
+        for bucket in pcm_groups.values():
+            identity_representatives = {}
+            for track in bucket:
                 if cancelled():
                     return finish([])
-                if abs(track.duration - rep.duration) > 0.5:
+                identity = (track.full_pcm_identity or
+                            pcm_identities.get(track.sha256, ""))
+                if not identity:
                     continue
-                if pcm_checks >= max_pair_hits:
-                    coverage.is_approximate = True
-                    break
-                pcm_checks += 1
-                if verify_full_normalized_pcm_match(rep.filepath, track.filepath):
+                rep = identity_representatives.setdefault(identity, track)
+                if rep is not track and abs(track.duration - rep.duration) <= 0.5:
                     link(rep, track, DuplicateType.EXACT_AUDIO)
-                    matched = True
-                    break
-            if not matched:
-                representatives.append(track)
+    else:
+        # Backward-compatible direct API path used by callers that do not own a
+        # persistent identity cache.
+        from core.fingerprint import verify_full_normalized_pcm_match
+        pcm_checks = 0
+        for bucket in pcm_groups.values():
+            representatives = []
+            for track in bucket:
+                if cancelled():
+                    return finish([])
+                matched = False
+                for rep in representatives:
+                    if cancelled():
+                        return finish([])
+                    if abs(track.duration - rep.duration) > 0.5:
+                        continue
+                    if pcm_checks >= max_pair_hits:
+                        coverage.is_approximate = True
+                        break
+                    pcm_checks += 1
+                    if verify_full_normalized_pcm_match(rep.filepath, track.filepath):
+                        link(rep, track, DuplicateType.EXACT_AUDIO)
+                        matched = True
+                        break
+                if not matched:
+                    representatives.append(track)
 
     # Index only exact representatives. Thousands of byte-identical copies add
     # linear storage and no redundant acoustic candidate pairs.
@@ -257,6 +289,7 @@ def cluster_duplicates(
         component_track.setdefault(exact.find(track.filepath), track)
     acoustic_tracks = sorted(component_track.values(), key=lambda t: t.filepath)
     shingle_index = defaultdict(list)
+    acoustic_total = len(acoustic_tracks)
     for idx, track in enumerate(acoustic_tracks):
         if cancelled():
             return finish([])
@@ -265,6 +298,10 @@ def cluster_duplicates(
             coverage.low_information_fingerprints += 1
         for token in tokens:
             shingle_index[token].append(idx)
+        if progress_callback and ((idx + 1) % 500 == 0 or idx + 1 == acoustic_total):
+            progress_callback((idx + 1) / max(1, acoustic_total), idx + 1,
+                              acoustic_total,
+                              f"Indexando huellas ({idx + 1:,}/{acoustic_total:,})...")
 
     if progress_callback:
         progress_callback(0.0, 0, 0, "Filtrando coincidencias acústicas...")
@@ -273,39 +310,53 @@ def cluster_duplicates(
     # demanding more corroboration from saturated, less-informative tokens.
     pair_scores = {}
     profile_cache = {}
-    # Rare tokens are processed first so high-information evidence receives the
-    # bounded pair budget before common tokens.
-    ordered_buckets = sorted(shingle_index.items(), key=lambda item: (len(item[1]), repr(item[0])))
-    for shingle, bucket in ordered_buckets:
-        if cancelled():
-            return finish([])
-        oversized = len(bucket) > max_bucket_size
-        if oversized:
-            coverage.oversized_buckets += 1
-            coverage.is_approximate = True
-            bucket_pairs = _sparse_oversized_bucket_pairs(bucket, acoustic_tracks, profile_cache)
-            coverage.candidate_pairs_dropped += max(
-                0, len(bucket) * (len(bucket) - 1) // 2 - len(bucket_pairs)
-            )
-        else:
-            bucket_pairs = itertools.combinations(bucket, 2)
-        score_increment = 1 if oversized else 2
-        for a, b in bucket_pairs:
-            if not _duration_compatible(acoustic_tracks[a], acoustic_tracks[b]):
-                coverage.candidate_pairs_prefiltered += 1
-                coverage.candidate_pairs_dropped += 1
+    total_buckets = len(shingle_index)
+    processed_buckets = 0
+    # Two linear passes give all ordinary (more informative) buckets priority
+    # over saturated buckets without sorting millions of token objects.
+    for oversized_pass in (False, True):
+        for shingle, bucket in shingle_index.items():
+            oversized = len(bucket) > max_bucket_size
+            if oversized != oversized_pass:
                 continue
-            coverage.candidate_pairs_generated += 1
-            pair = (a, b)
-            if pair in pair_scores:
-                pair_scores[pair] += score_increment
-            elif len(pair_scores) < max_pair_hits:
-                pair_scores[pair] = score_increment
-            else:
-                # Hard admission cap, independent of hit counts. Iteration is
-                # deterministic; dropped counts are candidate occurrences.
-                coverage.candidate_pairs_dropped += 1
+            if cancelled():
+                return finish([])
+            processed_buckets += 1
+            if oversized:
+                coverage.oversized_buckets += 1
                 coverage.is_approximate = True
+                bucket_pairs = _sparse_oversized_bucket_pairs(
+                    bucket, acoustic_tracks, profile_cache
+                )
+                # This counts token-bucket occurrences, not unique candidate
+                # pairs. Saturated tokens are non-discriminating evidence and
+                # must not be reported as failed or omitted music matches.
+                coverage.ambiguous_pair_occurrences_ignored += max(
+                    0, len(bucket) * (len(bucket) - 1) // 2 - len(bucket_pairs)
+                )
+            else:
+                bucket_pairs = itertools.combinations(bucket, 2)
+            score_increment = 1 if oversized else 2
+            for a, b in bucket_pairs:
+                if not _duration_compatible(acoustic_tracks[a], acoustic_tracks[b]):
+                    coverage.candidate_pairs_prefiltered += 1
+                    continue
+                coverage.candidate_pairs_generated += 1
+                pair = (a, b)
+                if pair in pair_scores:
+                    pair_scores[pair] += score_increment
+                elif len(pair_scores) < max_pair_hits:
+                    pair_scores[pair] = score_increment
+                else:
+                    coverage.candidate_pairs_dropped += 1
+                    coverage.is_approximate = True
+            if progress_callback and (processed_buckets % 10000 == 0 or
+                                      processed_buckets == total_buckets):
+                progress_callback(
+                    processed_buckets / max(1, total_buckets), processed_buckets,
+                    total_buckets,
+                    f"Filtrando candidatos ({processed_buckets:,}/{total_buckets:,} tokens)...",
+                )
     candidates = sorted(pair for pair, score in pair_scores.items() if score >= 6)
     del pair_scores, shingle_index
     coverage.candidate_pairs_retained = len(candidates)

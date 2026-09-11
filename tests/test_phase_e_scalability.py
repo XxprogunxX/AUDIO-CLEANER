@@ -481,7 +481,7 @@ class TestCandidateGenerationAndMemoryBounds(unittest.TestCase):
         groups, cov = cluster_duplicates(tracks, max_bucket_size=3, return_coverage=True)
         self.assertTrue(cov.is_approximate)
         self.assertTrue(cov.oversized_buckets > 0)
-        self.assertTrue(cov.candidate_pairs_dropped > 0)
+        self.assertTrue(cov.ambiguous_pair_occurrences_ignored > 0)
 
     def test_candidate_truncation_is_reported(self):
         """ScanCoverageReport accurately tallies dropped candidate combinations."""
@@ -490,7 +490,7 @@ class TestCandidateGenerationAndMemoryBounds(unittest.TestCase):
             for i in range(8)
         ]
         groups, cov = cluster_duplicates(tracks, max_bucket_size=4, return_coverage=True)
-        self.assertTrue(cov.candidate_pairs_dropped > 0)
+        self.assertTrue(cov.ambiguous_pair_occurrences_ignored > 0)
 
     def test_progress_counter_uses_actual_chunk_length(self):
         """Progress counter increments by exact chunk length, not fixed chunk_size."""

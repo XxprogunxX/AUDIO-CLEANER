@@ -274,7 +274,18 @@ class ScannerView(QWidget):
         self.progress_bar.setValue(pct)
 
         if stats.comparison_total > 0 and stats.progress_ratio is not None:
-            self.lbl_pct.setText(f"{pct}% de comparación acústica ({stats.comparison_current:,} de {stats.comparison_total:,} pares)")
+            phase = stats.phase.lower()
+            if "audio completo" in phase:
+                unit = "archivos PCM"
+            elif "indexando huellas" in phase:
+                unit = "pistas"
+            elif "filtrando candidatos" in phase:
+                unit = "tokens"
+            else:
+                unit = "pares acústicos"
+            self.lbl_pct.setText(
+                f"{pct}% ({stats.comparison_current:,} de {stats.comparison_total:,} {unit})"
+            )
         elif "Descubriendo" in stats.phase or "Indexando" in stats.phase or "Cargando" in stats.phase or "Agrupando" in stats.phase:
             self.lbl_pct.setText(f"{stats.phase}")
         else:

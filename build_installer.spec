@@ -16,7 +16,8 @@ for name in ('ffmpeg.exe', 'ffprobe.exe', 'fpcalc.exe'):
         raise RuntimeError(f'Missing build dependency: {name}. Place it in bin/ or PATH.')
     audio_binaries.append((resolved, 'bin'))
 
-# Ensure bin directory (fpcalc, ffmpeg, ffprobe) and app_icon are included in the package
+# Ensure the app icon is included. PyInstaller's PyQt6 hooks collect the Qt
+# libraries and platform plugins required by the imported modules.
 datas = [
     ('app_icon.png', '.') if os.path.exists('app_icon.png') else ('app_icon.ico', '.'),
 ]
@@ -69,6 +70,32 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# The managed build runtime exposes Poppler/libheif DLL directories globally.
+# Never package their ICU or Windows API-set shims: they shadow the compatible
+# Windows system libraries and make PyQt6 fail with WinError 127 at startup.
+system_runtime_names = {'icu.dll', 'icuuc.dll', 'ucrtbase.dll'}
+a.binaries[:] = [
+    entry for entry in a.binaries
+    if Path(entry[0]).name.lower() not in system_runtime_names
+    and not Path(entry[0]).name.lower().startswith('icudt')
+    and not Path(entry[0]).name.lower().startswith('api-ms-win-')
+]
+
+# _ssl must use the OpenSSL build shipped with this Python runtime, never a
+# same-named Poppler copy that happened to be visible while resolving DLLs.
+python_dll_dir = Path(sys.base_prefix) / 'DLLs'
+python_runtime_dlls = {
+    name: python_dll_dir / name
+    for name in ('libssl-3-x64.dll', 'libcrypto-3-x64.dll')
+}
+a.binaries[:] = [
+    (entry[0], str(python_runtime_dlls[Path(entry[0]).name.lower()]), entry[2])
+    if Path(entry[0]).name.lower() in python_runtime_dlls
+       and python_runtime_dlls[Path(entry[0]).name.lower()].is_file()
+    else entry
+    for entry in a.binaries
+]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

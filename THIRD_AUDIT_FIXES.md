@@ -14,7 +14,7 @@ Los siete hallazgos de la tercera auditoría quedaron corregidos y cubiertos por
 
 ## Evidencia de aceptación
 
-- Suite completa: **230 pruebas aprobadas y 11 subcasos parametrizados aprobados**.
+- Suite completa: **238 pruebas aprobadas y 11 subcasos parametrizados aprobados**.
 - Reproducciones de los ocho síntomas observables de la auditoría: **0 fallas reproducidas** después de la corrección.
 - Smoke test desde código: tres escaneos, cuatro archivos, caché y simulación aprobados; transcode lossless sospechoso detectado.
 - Ejecutable PyInstaller reconstruido e inspeccionado: FFmpeg, FFprobe y Chromaprint incluidos; ninguna base de datos de usuario incluida.
@@ -30,3 +30,15 @@ El evaluador ya mide recall del pipeline completo, pero una cifra representativa
 La indexación ya no genera tokens acústicos para huellas largas con menos de ocho palabras distintas, porque esa señal no permite discriminar pistas con fiabilidad. Los buckets que superan 500 miembros dejaron de truncarse por orden de ruta: ahora todos sus miembros participan en vecindarios dispersos, deterministas y acotados, ordenados por duración y proyecciones gruesas de la huella. Los tokens raros se procesan primero y la evidencia de buckets saturados necesita más corroboración.
 
 El filtro de diferencia de duración de 90 segundos se aplica antes de enviar pares a los workers. La cobertura registra cuántos pares descartó ese filtro y cuántas huellas carecían de información suficiente. En la reproducción adversaria de 1,000 pistas, el caso pasó de 124,750 comparaciones a **0 comparaciones en 0.23 segundos**. Una prueba separada confirmó que una pareja situada después del antiguo límite de 500 sí llega al comparador, con menos de 5,000 comparaciones totales para 520 pistas.
+
+## Corrección posterior: espera prolongada al agrupar bibliotecas reales
+
+La caché real de 44,207 pistas mostró 4,653 parejas con el mismo hash PCM inicial y duración compatible. La versión anterior verificaba esas posibles equivalencias leyendo ambos audios completos de forma serial y sin actualizar la interfaz. Ahora calcula una identidad SHA-256 del PCM nativo completo una sola vez por archivo necesario, con hasta seis trabajos concurrentes, guarda únicamente resultados válidos en `pcm_identity_cache` y los reutiliza por el SHA-256 inmutable del archivo. La clasificación `EXACT_AUDIO` mantiene las restricciones de canales, layout, sample rate, bit depth y codec aplicables.
+
+La indexación también usa una muestra temporal uniforme de palabras Chromaprint junto con los hashes tolerantes existentes. En las 44,088 huellas reales, las entradas estimadas bajaron de 26,547,283 a 4,909,890 (**81.5 % menos**). Un benchmark de solo lectura sobre la caché completa llegó a la comparación acústica en 36.4 segundos, incluyendo carga, agrupación exacta, construcción del índice y filtrado; la interfaz muestra avance separado para identidad PCM, indexación de huellas, filtrado de tokens y comparación de pares. La primera ejecución debe completar la nueva caché PCM; las siguientes la reutilizan.
+
+## Corrección posterior: diagnóstico de cobertura
+
+El aviso de cobertura confundía combinaciones teóricas de tokens acústicos saturados con candidatos reales omitidos. En la caché de 44,207 pistas, el contador mostraba 3,217,007 aunque los 12,533 candidatos legítimos se conservaron y ninguno alcanzó el límite de memoria. Esas métricas ahora están separadas: `candidate_pairs_dropped` representa únicamente candidatos rechazados por el tope de memoria, mientras `ambiguous_pair_occurrences_ignored` registra evidencia no discriminante y el filtro de duración conserva su propio contador.
+
+El descubrimiento también excluye las carpetas técnicas de Windows antes de recorrerlas. Los archivos vacíos se registran como inválidos ignorados, y los fallos reales conservan ruta y motivo para mostrarlos en la interfaz. En la biblioteca examinada, los 31 supuestos fallos correspondían a 14 errores dentro de carpetas protegidas, 15 archivos de 0 bytes y solo 2 MP3 con acceso denegado.

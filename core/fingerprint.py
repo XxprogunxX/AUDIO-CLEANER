@@ -313,6 +313,97 @@ def get_canonical_pcm_format(info_a: AudioStreamInfo, info_b: AudioStreamInfo) -
     return canonical_a
 
 
+def compute_full_normalized_pcm_identity(
+    filepath: str,
+    chunk_size: int = 131072,
+    total_timeout: float = 300.0,
+    stall_timeout: float = 15.0,
+    is_cancelled=None,
+) -> Optional[str]:
+    """Return a versioned SHA-256 identity of the complete, native PCM stream.
+
+    The profile is part of the digest so incompatible channel layouts, sample
+    rates, bit depths, or lossy codecs cannot collapse into EXACT_AUDIO. No
+    downmixing or resampling is performed and audio bytes are streamed.
+    """
+    if (not filepath or not os.path.isfile(filepath) or chunk_size <= 0 or
+            total_timeout <= 0 or stall_timeout <= 0):
+        return None
+    info = get_audio_stream_info(filepath)
+    if not info:
+        return None
+    canonical_fmt = get_canonical_pcm_format(info, info)
+    ffmpeg_bin = get_ffmpeg_path()
+    if not canonical_fmt or not ffmpeg_bin:
+        return None
+
+    profile = {
+        "version": 1,
+        "sample_rate": info.sample_rate,
+        "channels": info.channels,
+        "channel_layout": info.channel_layout or f"{info.channels}ch",
+        "bit_depth": info.bit_depth,
+        "pcm_format": canonical_fmt,
+        "source_kind": "lossless" if info.is_lossless else info.codec_name,
+    }
+    digest = hashlib.sha256()
+    digest.update(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    digest.update(b"\0")
+    cmd = [ffmpeg_bin, "-v", "quiet", "-nostdin", "-i", filepath,
+           "-f", canonical_fmt, "-"]
+    startupinfo = _get_low_priority_startupinfo() if sys.platform == "win32" else None
+    proc = None
+    reader = None
+    completed = threading.Event()
+    activity = [time.monotonic()]
+    size = [0]
+    failures = []
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                startupinfo=startupinfo)
+        _set_subprocess_low_priority(proc)
+
+        def read_stream():
+            try:
+                read = getattr(proc.stdout, "read1", proc.stdout.read)
+                while True:
+                    block = read(chunk_size)
+                    if not block:
+                        break
+                    digest.update(block)
+                    size[0] += len(block)
+                    activity[0] = time.monotonic()
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                completed.set()
+
+        reader = threading.Thread(target=read_stream, daemon=True)
+        reader.start()
+        started = time.monotonic()
+        while not completed.is_set():
+            now = time.monotonic()
+            if (failures or (is_cancelled and is_cancelled()) or
+                    now - started >= total_timeout or
+                    now - activity[0] >= stall_timeout):
+                return None
+            time.sleep(0.02)
+        if failures or not size[0]:
+            return None
+        remaining = max(0.01, total_timeout - (time.monotonic() - started))
+        if proc.wait(timeout=remaining) != 0:
+            return None
+        return "pcm-v1:" + digest.hexdigest()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        if proc is not None:
+            terminate_process_tree(proc)
+        if reader is not None:
+            reader.join(timeout=1.0)
+
+
 def verify_full_normalized_pcm_match(
     filepath_a: str,
     filepath_b: str,

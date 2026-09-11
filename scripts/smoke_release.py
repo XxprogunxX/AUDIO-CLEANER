@@ -50,6 +50,15 @@ def main():
         if args.exe:
             # The standalone package must find its own audio tools.
             env['PATH'] = str(Path(os.environ.get('SystemRoot', 'C:/Windows'))/'System32')
+        gui_env = dict(env, QT_QPA_PLATFORM='offscreen')
+        gui_run = subprocess.run(
+            command + ['--gui-smoke-test'], cwd=work, env=gui_env,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if gui_run.returncode:
+            raise RuntimeError(
+                f'GUI import failed: {gui_run.returncode}\n{gui_run.stdout}\n{gui_run.stderr}'
+            )
         for attempt in range(2):
             output = work/f'results-{attempt}.csv'
             run = subprocess.run(command + ['--cli', '--folder', str(music), '--db', str(work/'cache.db'),
@@ -78,7 +87,7 @@ def main():
             ).fetchone()[0]
         assert spectral_state == 'suspected_transcode', spectral_state
         print(json.dumps({'status':'passed', 'mode':'packaged' if args.exe else 'source',
-                          'scans':3, 'files':4, 'classification':'EXACT_AUDIO',
+                          'gui_import':True, 'scans':3, 'files':4, 'classification':'EXACT_AUDIO',
                           'spectral_assessment':spectral_state, 'dry_run_preserved_files':True}))
 
 

@@ -274,7 +274,7 @@ Este `.exe` es completamente autónomo y puede distribuirse en cualquier PC con 
 
 ## 🧪 Suite de Pruebas Automatizadas
 
-El proyecto cuenta con una suite de **230 pruebas automatizadas y 11 subcasos parametrizados** que valida integridad matemática, seguridad de borrado, concurrencia, revalidación previa a cualquier operación que retire el origen y persistencia:
+El proyecto cuenta con una suite de **238 pruebas automatizadas y 11 subcasos parametrizados** que valida integridad matemática, seguridad de borrado, concurrencia, revalidación previa a cualquier operación que retire el origen y persistencia:
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
@@ -299,11 +299,12 @@ python -m unittest discover -s tests -p "test_*.py"
   - Firma rápida de 12 KB (`quick_signature`) para invalidación de caché, con revalidación criptográfica SHA-256 autoritativa obligatoria en disco previa a cualquier acción destructiva (`EXACT_HASH` y `EXACT_AUDIO`).
   - Migración SQLite aditiva e idempotente (`PRAGMA table_info` y `ALTER TABLE` seguro preservando datos existentes).
   - Generación bounded de candidatos durante la ingesta streaming con memoria acotada.
-- **Tercera auditoría — Concurrencia, recall y evidencia de interfaz (12 pruebas)**:
+- **Tercera auditoría — Concurrencia, recall y evidencia de interfaz (16 pruebas)**:
   - Reclamación atómica del origen durante backup, papelera y eliminación; preservación de destinos ajenos o ambiguos.
   - Recuperación conservadora tras cierres, candidatos acústicos difusos acotados, FFmpeg resuelto dentro del paquete y códigos de salida fiables en CLI.
   - Etiquetas lossless prudentes, visualización espectral sin datos inventados y evaluación de recall del pipeline completo.
   - Supresión de huellas largas con baja información, prefiltrado de duración y cobertura dispersa de todos los miembros de buckets saturados, sin el sesgo de los primeros 500 paths.
+  - Identidad PCM completa calculada una sola vez por SHA-256, persistida en SQLite y reutilizada en escaneos posteriores; progreso visible durante verificación, indexación y filtrado.
 
 ---
 

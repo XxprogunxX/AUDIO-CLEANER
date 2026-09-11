@@ -9,12 +9,13 @@ import time
 import itertools
 import logging
 import threading
-from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait, FIRST_COMPLETED
 from typing import List, Optional, Callable, Dict, Any
 from core.models import AudioTrack, DuplicateGroup, DuplicateType, ScanStats
 from core.fingerprint import (
     compute_file_sha256,
     compute_audio_pcm_hash,
+    compute_full_normalized_pcm_identity,
     extract_fingerprint
 )
 from core.metadata_extractor import extract_metadata
@@ -36,6 +37,21 @@ SUPPORTED_EXTENSIONS = {
     ".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg",
     ".opus", ".wma", ".alac", ".aiff", ".ape", ".wv"
 }
+
+_SYSTEM_DIRECTORIES = {"$recycle.bin", "system volume information", "found.000"}
+
+
+def _worker_scan_issue(filepath: str, status: str, reason: str, exc=None) -> Dict[str, str]:
+    """Return a pickle-safe diagnostic instead of silently losing the file."""
+    detail = {
+        "_scan_status": status,
+        "filepath": filepath,
+        "reason": reason,
+    }
+    if exc is not None:
+        detail["error_type"] = type(exc).__name__
+        detail["error_message"] = str(exc)[:500]
+    return detail
 
 
 def _worker_process_init():
@@ -67,6 +83,7 @@ def _process_audio_worker(
     Extracts SHA-256 and metadata for all files, while gating acoustic fingerprinting
     by min_duration and spectral analysis by the spectral_analysis flag.
     """
+    filepath = ""
     try:
         if isinstance(filepath_or_args, tuple):
             filepath = filepath_or_args[0]
@@ -78,12 +95,12 @@ def _process_audio_worker(
             filepath = filepath_or_args
 
         if not os.path.isfile(filepath):
-            return None
+            return _worker_scan_issue(filepath, "failed", "El archivo ya no existe o no es accesible")
 
         stat = os.stat(filepath)
         filesize = stat.st_size
         if filesize == 0:
-            return None
+            return _worker_scan_issue(filepath, "skipped_invalid", "Archivo vacío (0 bytes)")
         mtime = stat.st_mtime
         mtime_ns = getattr(stat, "st_mtime_ns", int(mtime * 1_000_000_000))
         quick_sig = compute_quick_signature(filepath)
@@ -166,8 +183,9 @@ def _process_audio_worker(
             "album": meta.get("album", ""),
         }
         return track_data
-    except Exception:
-        return None
+    except Exception as exc:
+        reason = "Acceso denegado" if isinstance(exc, PermissionError) else "No se pudo analizar"
+        return _worker_scan_issue(filepath, "failed", reason, exc)
 
 
 class AudioScanner:
@@ -246,6 +264,113 @@ class AudioScanner:
     def is_cancelled(self) -> bool:
         return self._stop_event.is_set()
 
+    def _prepare_full_pcm_identities(self, tracks, progress_callback=None):
+        """Compute complete PCM identities once, in parallel, only when needed."""
+        get_cached = getattr(self.db, "get_pcm_identities", None)
+        save_cached = getattr(self.db, "upsert_pcm_identities", None)
+        if not callable(get_cached) or not callable(save_cached):
+            return None
+
+        # Byte-identical files already share exact evidence. Keep one track per
+        # SHA and identify only prefix-hash buckets with a duration-compatible
+        # distinct binary representation.
+        by_sha = {}
+        for track in tracks:
+            if track.sha256 and track.audio_hash:
+                by_sha.setdefault(track.sha256, track)
+        prefix_buckets = {}
+        for track in by_sha.values():
+            prefix_buckets.setdefault(track.audio_hash, []).append(track)
+
+        required = {}
+        for bucket in prefix_buckets.values():
+            if len(bucket) < 2:
+                continue
+            for index, track in enumerate(bucket):
+                if any(abs(track.duration - other.duration) <= 0.5
+                       for other in bucket[:index] + bucket[index + 1:]):
+                    required[track.sha256] = track
+
+        self.stats.pcm_identity_files = len(required)
+        try:
+            identities = get_cached(list(required))
+        except Exception:
+            logging.getLogger(__name__).exception("Could not read PCM identity cache")
+            return None
+        if not isinstance(identities, dict):
+            return None
+        identities = {key: value for key, value in identities.items() if key and value}
+        self.stats.pcm_identity_cached = len(identities)
+        missing = [track for sha, track in required.items() if sha not in identities]
+        total = len(missing)
+
+        if total:
+            self.stats.phase = f"Verificando audio completo (0/{total:,})..."
+            self.stats.progress_ratio = 0.0
+            self.stats.comparison_current = 0
+            self.stats.comparison_total = total
+            if progress_callback:
+                progress_callback(self.stats)
+
+            workers = max(1, min(self.max_workers, 6))
+            iterator = iter(missing)
+            pending = {}
+            completed = 0
+            batch = {}
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for track in itertools.islice(iterator, workers * 2):
+                    pending[executor.submit(
+                        compute_full_normalized_pcm_identity,
+                        track.filepath,
+                        is_cancelled=self.is_cancelled,
+                    )] = track
+                while pending:
+                    self._pause_event.wait()
+                    if self.is_cancelled():
+                        for future in pending:
+                            future.cancel()
+                        break
+                    done, _ = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        track = pending.pop(future)
+                        try:
+                            identity = future.result()
+                        except Exception:
+                            identity = None
+                        if identity:
+                            identities[track.sha256] = identity
+                            batch[track.sha256] = identity
+                        else:
+                            self.stats.pcm_identity_failures += 1
+                        completed += 1
+                        try:
+                            next_track = next(iterator)
+                            pending[executor.submit(
+                                compute_full_normalized_pcm_identity,
+                                next_track.filepath,
+                                is_cancelled=self.is_cancelled,
+                            )] = next_track
+                        except StopIteration:
+                            pass
+                        if len(batch) >= 25:
+                            save_cached(batch)
+                            batch.clear()
+                        if (completed % 5 == 0 or completed == total) and progress_callback:
+                            self.stats.phase = (
+                                f"Verificando audio completo ({completed:,}/{total:,})..."
+                            )
+                            self.stats.progress_ratio = completed / max(1, total)
+                            self.stats.comparison_current = completed
+                            self.stats.elapsed_seconds = getattr(self.stats, "elapsed_seconds", 0.0)
+                            progress_callback(self.stats)
+            if batch:
+                save_cached(batch)
+
+        for track in tracks:
+            if track.sha256:
+                track.full_pcm_identity = identities.get(track.sha256, "")
+        return identities
+
     def scan_directory(
         self,
         folder_path: str,
@@ -270,14 +395,32 @@ class AudioScanner:
         # 1. Discover all audio files
         discovered_files: List[str] = []
         last_walk_update = time.time()
+
+        def record_issue(path: str, reason: str, error_type: str = ""):
+            if len(self.stats.failed_file_details) < 100:
+                self.stats.failed_file_details.append({
+                    "filepath": path,
+                    "reason": reason,
+                    "error_type": error_type,
+                })
+
         def discovery_error(error):
             self.stats.files_failed += 1
             self.stats.is_complete = False
+            record_issue(getattr(error, "filename", "") or folder_path,
+                         "Carpeta inaccesible", type(error).__name__)
             logging.getLogger(__name__).warning("Directory inaccessible: %s", error)
 
-        for root, _, files in os.walk(folder_path, onerror=discovery_error):
+        for root, dirs, files in os.walk(folder_path, onerror=discovery_error):
             if self._stop_event.is_set():
                 break
+            kept_dirs = []
+            for directory in dirs:
+                if directory.casefold() in _SYSTEM_DIRECTORIES:
+                    self.stats.system_directories_skipped += 1
+                else:
+                    kept_dirs.append(directory)
+            dirs[:] = kept_dirs
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
                 if ext in SUPPORTED_EXTENSIONS:
@@ -396,8 +539,22 @@ class AudioScanner:
                                 logging.getLogger(__name__).warning("Worker failed processing %s: %s", path, worker_err)
                                 self.stats.is_complete = False
                                 self.stats.is_approximate = True
-                                res = None
-                            if res:
+                                res = _worker_scan_issue(
+                                    path, "failed", "Falló el proceso de análisis", worker_err
+                                )
+                            result_status = (res.get("_scan_status", "")
+                                             if isinstance(res, dict) else "")
+                            if result_status == "skipped_invalid":
+                                self.stats.files_skipped_invalid += 1
+                            elif result_status == "failed":
+                                self.stats.files_failed += 1
+                                self.stats.is_complete = False
+                                record_issue(
+                                    res.get("filepath", path),
+                                    res.get("reason", "No se pudo analizar"),
+                                    res.get("error_type", ""),
+                                )
+                            elif res:
                                 track = AudioTrack(
                                     filepath=res["filepath"],
                                     filesize=res["filesize"],
@@ -427,8 +584,13 @@ class AudioScanner:
                                 batch_save.append(track)
                             else:
                                 self.stats.files_failed += 1
-                        except Exception:
+                                self.stats.is_complete = False
+                                record_issue(path, "El proceso no devolvió un resultado")
+                        except Exception as result_error:
                             self.stats.files_failed += 1
+                            self.stats.is_complete = False
+                            record_issue(path, "Resultado de análisis inválido",
+                                         type(result_error).__name__)
 
                         self.stats.files_scanned += 1
                         self.stats.elapsed_seconds = time.time() - start_time
@@ -476,7 +638,15 @@ class AudioScanner:
         # Lazy load all valid cached tracks
         all_tracks.extend(self.db.get_tracks_for_files(cached_paths_to_load))
 
+        pcm_identities = self._prepare_full_pcm_identities(all_tracks, progress_callback)
+        if self._stop_event.is_set():
+            self.stats.is_running = False
+            return []
+
         self.stats.phase = "Agrupando duplicados..."
+        self.stats.progress_ratio = None
+        self.stats.comparison_current = 0
+        self.stats.comparison_total = 0
         if progress_callback:
             progress_callback(self.stats)
 
@@ -493,7 +663,8 @@ class AudioScanner:
             all_tracks,
             progress_callback=clustering_progress,
             is_cancelled=self.is_cancelled,
-            config=scan_config
+            config=scan_config,
+            pcm_identities=pcm_identities,
         )
 
         # Propagate coverage before presenting results in either client.
@@ -501,6 +672,7 @@ class AudioScanner:
         if coverage is not None:
             for name in ("candidate_pairs_generated", "candidate_pairs_retained",
                          "candidate_pairs_dropped", "candidate_pairs_prefiltered",
+                         "ambiguous_pair_occurrences_ignored",
                          "oversized_buckets", "low_information_fingerprints",
                          "worker_failures"):
                 setattr(self.stats, name, getattr(coverage, name))
