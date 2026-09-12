@@ -14,11 +14,14 @@ from PyQt6.QtGui import QFont
 import qtawesome as qta
 
 from core.database import Database
-from gui.styles import COLORS
+from gui.styles import COLORS, get_qss
 
 
 class SettingsView(QWidget):
     settings_saved = pyqtSignal(dict)
+    about_requested = pyqtSignal()
+    feedback_requested = pyqtSignal()
+    theme_changed = pyqtSignal(str)
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -36,10 +39,10 @@ class SettingsView(QWidget):
         title_block = QVBoxLayout()
         title_block.setSpacing(2)
 
-        lbl_header = QLabel("CONFIGURACIÓN Y PREFERENCIAS")
-        lbl_header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
-        title_block.addWidget(lbl_header)
+        self.lbl_header = QLabel("CONFIGURACIÓN Y PREFERENCIAS")
+        self.lbl_header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
+        title_block.addWidget(self.lbl_header)
 
         lbl_sub = QLabel("Ajusta los algoritmos de detección, hilos de escaneo y gestiona la base de datos de huellas.")
         lbl_sub.setObjectName("muted")
@@ -273,6 +276,94 @@ class SettingsView(QWidget):
         c3_layout.addLayout(grid3)
         layout.addWidget(card_policy)
 
+        # ── Card 4: Appearance & Visual Theme ──────────────────────
+        card_theme = QFrame()
+        card_theme.setObjectName("card")
+        c_theme_layout = QVBoxLayout(card_theme)
+        c_theme_layout.setContentsMargins(18, 16, 18, 16)
+        c_theme_layout.setSpacing(14)
+
+        c_theme_title = QLabel("APARIENCIA Y TEMA VISUAL")
+        c_theme_title.setObjectName("section_label")
+        c_theme_layout.addWidget(c_theme_title)
+
+        grid_theme = QGridLayout()
+        grid_theme.setVerticalSpacing(10)
+        grid_theme.setHorizontalSpacing(16)
+
+        grid_theme.addWidget(QLabel("Tema de la interfaz:"), 0, 0)
+        self.combo_theme = QComboBox()
+        self.combo_theme.addItem("Modo Oscuro (Figma Cyber / Cyan — Recomendado para audio)", "dark")
+        self.combo_theme.addItem("Modo Claro (Clean Slate / Sky — Alta luminosidad y legibilidad)", "light")
+        self.combo_theme.setFixedHeight(32)
+
+        from gui.styles import get_current_theme
+        curr_theme = get_current_theme()
+        idx = 1 if curr_theme == "light" else 0
+        self.combo_theme.setCurrentIndex(idx)
+        self.combo_theme.currentIndexChanged.connect(self._on_theme_combo_changed)
+
+        grid_theme.addWidget(self.combo_theme, 0, 1)
+        c_theme_layout.addLayout(grid_theme)
+        layout.addWidget(card_theme)
+
+        # ── Card 4: Commercial License & Customer Support ──────────
+        card_support = QFrame()
+        card_support.setObjectName("card")
+        c4_layout = QVBoxLayout(card_support)
+        c4_layout.setContentsMargins(18, 16, 18, 16)
+        c4_layout.setSpacing(14)
+
+        c4_title = QLabel("LICENCIA COMERCIAL Y ATENCIÓN AL CLIENTE")
+        c4_title.setObjectName("section_label")
+        c4_layout.addWidget(c4_title)
+
+        grid4 = QGridLayout()
+        grid4.setVerticalSpacing(10)
+        grid4.setHorizontalSpacing(16)
+
+        grid4.addWidget(QLabel("Estado de la Licencia:"), 0, 0)
+        lic_badge_box = QHBoxLayout()
+        self.badge_lbl = QLabel("● LICENCIA COMERCIAL PRO VITALICIA")
+        self.badge_lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        self.badge_lbl.setStyleSheet(
+            f"background-color: {COLORS['success_bg']}; color: {COLORS['success']};"
+            f"border: 1px solid {COLORS['success']}; border-radius: 4px; padding: 2px 8px;"
+        )
+        lic_badge_box.addWidget(self.badge_lbl)
+        lic_badge_box.addStretch()
+        grid4.addLayout(lic_badge_box, 0, 1)
+
+        grid4.addWidget(QLabel("Versión Instalada:"), 1, 0)
+        ver_lbl = QLabel("Audio Cleaner Pro v1.0.0 · Build 2026.09 (64-bit Windows)")
+        ver_lbl.setObjectName("dim")
+        grid4.addWidget(ver_lbl, 1, 1)
+
+        c4_layout.addLayout(grid4)
+
+        # Support & Info action buttons
+        btn_sup_row = QHBoxLayout()
+        btn_sup_row.setSpacing(10)
+
+        btn_feedback = QPushButton(" Abrir Buzón de Sugerencias y Soporte")
+        btn_feedback.setObjectName("ghost")
+        btn_feedback.setIcon(qta.icon("fa5s.lightbulb", color=COLORS["cyan"]))
+        btn_feedback.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_feedback.clicked.connect(self.feedback_requested.emit)
+        btn_sup_row.addWidget(btn_feedback)
+
+        btn_about = QPushButton(" Información Corporativa y Legal (Acerca de)")
+        btn_about.setObjectName("ghost")
+        btn_about.setIcon(qta.icon("fa5s.info-circle", color=COLORS["text_muted"]))
+        btn_about.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_about.clicked.connect(self.about_requested.emit)
+        btn_sup_row.addWidget(btn_about)
+
+        btn_sup_row.addStretch()
+        c4_layout.addLayout(btn_sup_row)
+
+        layout.addWidget(card_support)
+
         layout.addStretch()
         scroll.setWidget(container)
         root.addWidget(scroll, stretch=1)
@@ -288,13 +379,13 @@ class SettingsView(QWidget):
 
         bottom_row.addStretch()
 
-        btn_save = QPushButton(" Guardar Configuración")
-        btn_save.setObjectName("primary")
-        btn_save.setIcon(qta.icon("fa5s.save", color="#000000"))
-        btn_save.setFixedSize(180, 36)
-        btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_save.clicked.connect(self._save_settings)
-        bottom_row.addWidget(btn_save)
+        self.btn_save = QPushButton(" Guardar Configuración")
+        self.btn_save.setObjectName("primary")
+        self.btn_save.setIcon(qta.icon("fa5s.save", color=COLORS.get("primary_text", "#000000")))
+        self.btn_save.setFixedSize(180, 36)
+        self.btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_save.clicked.connect(self._save_settings)
+        bottom_row.addWidget(self.btn_save)
 
         root.addLayout(bottom_row)
 
@@ -347,13 +438,41 @@ class SettingsView(QWidget):
         self.combo_policy.setCurrentIndex(0)
         QMessageBox.information(self, "Restablecido", "Se han restablecido los valores por defecto.")
 
+    def _on_theme_combo_changed(self, index: int):
+        theme_code = self.combo_theme.currentData()
+        if theme_code:
+            self.theme_changed.emit(theme_code)
+
+    def refresh_theme(self):
+        """Refreshes component labels, borders and colors when the theme changes."""
+        from gui.styles import COLORS, get_current_theme
+        theme = get_current_theme()
+        if getattr(self, "_applied_theme", None) != theme:
+            self.setStyleSheet(get_qss(COLORS))
+            self._applied_theme = theme
+        self.lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
+        self.lbl_sim_val.setStyleSheet(f"color: {COLORS['cyan']};")
+        self.lbl_db_stats.setStyleSheet(f"color: {COLORS['cyan']};")
+        self.badge_lbl.setStyleSheet(
+            f"background-color: {COLORS['success_bg']}; color: {COLORS['success']};"
+            f"border: 1px solid {COLORS['success']}; border-radius: 4px; padding: 2px 8px;"
+        )
+        self.btn_save.setIcon(qta.icon("fa5s.save", color=COLORS.get("primary_text", "#000000")))
+        
+        expected_idx = 1 if theme == "light" else 0
+        if self.combo_theme.currentIndex() != expected_idx:
+            self.combo_theme.blockSignals(True)
+            self.combo_theme.setCurrentIndex(expected_idx)
+            self.combo_theme.blockSignals(False)
+
     def _save_settings(self):
         config = {
             "similarity_threshold": self.slider_sim.value() / 100.0,
             "min_duration": self.spin_duration.value(),
             "threads": self.spin_threads.value(),
             "spectral_fft": self.chk_spectral.isChecked(),
-            "policy": self.combo_policy.currentText()
+            "policy": self.combo_policy.currentText(),
+            "theme": self.combo_theme.currentData() or "dark"
         }
         self.settings_saved.emit(config)
         QMessageBox.information(self, "Guardado", "La configuración ha sido guardada correctamente.")

@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QFrame, QProgressBar, QFileDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 import qtawesome as qta
 
 from gui.styles import COLORS
@@ -102,8 +102,11 @@ class NavButton(QPushButton):
 
 
 class Sidebar(QWidget):
-    nav_changed = pyqtSignal(str)    # emits section name
-    folder_requested = pyqtSignal()  # user wants to change folder
+    nav_changed = pyqtSignal(str)          # emits section name
+    folder_requested = pyqtSignal()        # user wants to change folder
+    feedback_requested = pyqtSignal()      # user wants to open feedback/suggestions modal
+    about_requested = pyqtSignal()         # user wants to open about modal
+    theme_toggle_requested = pyqtSignal()  # user wants to toggle dark/light mode
 
     SECTIONS = [
         ("fa5s.music",          "Biblioteca"),
@@ -115,6 +118,8 @@ class Sidebar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._theme_background = QColor(COLORS["bg_sidebar"])
+        self._theme_border = QColor(COLORS["border"])
         self.setObjectName("sidebar")
         self.setFixedWidth(220)
 
@@ -127,25 +132,33 @@ class Sidebar(QWidget):
         logo_frame.setObjectName("transparent")
         logo_frame.setFixedHeight(64)
         logo_layout = QHBoxLayout(logo_frame)
-        logo_layout.setContentsMargins(16, 0, 16, 0)
+        logo_layout.setContentsMargins(16, 0, 14, 0)
+        logo_layout.setSpacing(8)
 
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(qta.icon("fa5s.fingerprint", color=COLORS["cyan"]).pixmap(22, 22))
-        logo_layout.addWidget(icon_lbl)
+        self.icon_lbl = QLabel()
+        self.icon_lbl.setPixmap(qta.icon("fa5s.fingerprint", color=COLORS["cyan"]).pixmap(22, 22))
+        logo_layout.addWidget(self.icon_lbl)
 
-        app_name = QLabel("AUDIO CLEANER")
-        app_name.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-        app_name.setStyleSheet(f"color: {COLORS['text_main']}; letter-spacing: 1px;")
-        logo_layout.addWidget(app_name)
+        self.app_name = QLabel("AUDIO CLEANER")
+        self.app_name.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        self.app_name.setStyleSheet(f"color: {COLORS['text_main']}; letter-spacing: 1px;")
+        logo_layout.addWidget(self.app_name)
         logo_layout.addStretch()
+
+        self.btn_theme_toggle = QPushButton()
+        self.btn_theme_toggle.setObjectName("ghost")
+        self.btn_theme_toggle.setFixedSize(30, 30)
+        self.btn_theme_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_theme_toggle.clicked.connect(self.theme_toggle_requested.emit)
+        logo_layout.addWidget(self.btn_theme_toggle)
 
         root.addWidget(logo_frame)
 
         # Thin separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
-        root.addWidget(sep)
+        self.sep1 = QFrame()
+        self.sep1.setFrameShape(QFrame.Shape.HLine)
+        self.sep1.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
+        root.addWidget(self.sep1)
 
         root.addSpacing(8)
 
@@ -170,18 +183,17 @@ class Sidebar(QWidget):
             self._nav_buttons[label] = btn
             root.addWidget(btn)
 
-        # ── Spacer pushing folder & storage to bottom ──────────────
-        root.addStretch()
+        root.addSpacing(10)
 
         # Thin separator
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px; margin: 0 12px;")
-        root.addWidget(sep2)
+        self.sep2 = QFrame()
+        self.sep2.setFrameShape(QFrame.Shape.HLine)
+        self.sep2.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px; margin: 0 12px;")
+        root.addWidget(self.sep2)
 
-        root.addSpacing(8)
+        root.addSpacing(6)
 
-        # ── Folder selector (at bottom above storage bar) ──────────
+        # ── Folder selector (directly under navigation) ────────────
         folder_label = QLabel("  CARPETA ACTIVA")
         folder_label.setObjectName("section_label")
         folder_label.setFixedHeight(24)
@@ -194,40 +206,76 @@ class Sidebar(QWidget):
         self.lbl_folder.setContentsMargins(16, 0, 16, 0)
         root.addWidget(self.lbl_folder)
 
-        btn_folder = QPushButton("  Cambiar carpeta")
-        btn_folder.setObjectName("ghost")
-        btn_folder.setIcon(qta.icon("fa5s.folder-open", color=COLORS["text_muted"]))
-        btn_folder.setFixedHeight(34)
-        btn_folder.setContentsMargins(12, 0, 12, 0)
-        btn_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_folder.clicked.connect(self.folder_requested.emit)
-        root.addWidget(btn_folder)
+        root.addSpacing(4)
 
-        root.addSpacing(8)
+        self.btn_folder = QPushButton("  Cambiar carpeta")
+        self.btn_folder.setObjectName("ghost")
+        self.btn_folder.setIcon(qta.icon("fa5s.folder-open", color=COLORS["text_muted"]))
+        self.btn_folder.setFixedHeight(34)
+        self.btn_folder.setContentsMargins(12, 0, 12, 0)
+        self.btn_folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_folder.clicked.connect(self.folder_requested.emit)
+        root.addWidget(self.btn_folder)
+
+        # ── Spacer pushing storage & support to bottom ──────────────
+        root.addStretch()
 
         # ── Storage bar ────────────────────────────────────────────
-        sep3 = QFrame()
-        sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
-        root.addWidget(sep3)
+        self.sep3 = QFrame()
+        self.sep3.setFrameShape(QFrame.Shape.HLine)
+        self.sep3.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
+        root.addWidget(self.sep3)
 
         self.storage_bar = StorageBar()
         root.addWidget(self.storage_bar)
 
 
+        # ── Commercial Support & About Buttons ──────────────────────
+        self.sep4 = QFrame()
+        self.sep4.setFrameShape(QFrame.Shape.HLine)
+        self.sep4.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
+        root.addWidget(self.sep4)
+
+        support_frame = QWidget()
+        support_frame.setObjectName("transparent")
+        support_layout = QVBoxLayout(support_frame)
+        support_layout.setContentsMargins(12, 6, 12, 4)
+        support_layout.setSpacing(4)
+
+        self.btn_feedback = QPushButton("  Buzón de sugerencias")
+        self.btn_feedback.setObjectName("ghost")
+        self.btn_feedback.setIcon(qta.icon("fa5s.lightbulb", color=COLORS["cyan"]))
+        self.btn_feedback.setFixedHeight(30)
+        self.btn_feedback.setFont(QFont("Segoe UI", 8))
+        self.btn_feedback.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_feedback.clicked.connect(self.feedback_requested.emit)
+        support_layout.addWidget(self.btn_feedback)
+
+        self.btn_about = QPushButton("  Acerca de nosotros")
+        self.btn_about.setObjectName("ghost")
+        self.btn_about.setIcon(qta.icon("fa5s.info-circle", color=COLORS["text_muted"]))
+        self.btn_about.setFixedHeight(30)
+        self.btn_about.setFont(QFont("Segoe UI", 8))
+        self.btn_about.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_about.clicked.connect(self.about_requested.emit)
+        support_layout.addWidget(self.btn_about)
+
+        root.addWidget(support_frame)
+
         # ── Version tag ────────────────────────────────────────────
         version_frame = QFrame()
         version_frame.setObjectName("transparent")
         version_layout = QHBoxLayout(version_frame)
-        version_layout.setContentsMargins(16, 6, 16, 8)
+        version_layout.setContentsMargins(16, 4, 16, 8)
 
-        v_lbl = QLabel("v1.0  ·  Windows")
+        v_lbl = QLabel("v1.0.0 Pro  ·  Windows")
         v_lbl.setObjectName("dim")
         v_lbl.setFont(QFont("Segoe UI", 7))
         version_layout.addWidget(v_lbl)
         version_layout.addStretch()
 
         root.addWidget(version_frame)
+        self.refresh_theme()
 
     def _on_nav_click(self, section: str):
         self._current_section = section
@@ -248,3 +296,39 @@ class Sidebar(QWidget):
         else:
             self.lbl_folder.setText("Sin seleccionar")
 
+    def refresh_theme(self):
+        """Refreshes sidebar icons, buttons and separator lines upon theme change."""
+        from gui.styles import COLORS, get_current_theme
+        theme = get_current_theme()
+        self._theme_background = QColor(COLORS["bg_sidebar"])
+        self._theme_border = QColor(COLORS["border"])
+        self.update()
+        if theme == "dark":
+            self.btn_theme_toggle.setIcon(qta.icon("fa5s.sun", color="#FBBF24"))
+            self.btn_theme_toggle.setToolTip("Cambiar a Modo Claro (Light Mode)")
+        else:
+            self.btn_theme_toggle.setIcon(qta.icon("fa5s.moon", color="#64748B"))
+            self.btn_theme_toggle.setToolTip("Cambiar a Modo Oscuro (Dark Mode)")
+
+        self.icon_lbl.setPixmap(qta.icon("fa5s.fingerprint", color=COLORS["cyan"]).pixmap(22, 22))
+        self.app_name.setStyleSheet(f"color: {COLORS['text_main']}; letter-spacing: 1px;")
+
+        for btn in self._nav_buttons.values():
+            btn._update_icon()
+
+        self.btn_folder.setIcon(qta.icon("fa5s.folder-open", color=COLORS["text_muted"]))
+        self.btn_feedback.setIcon(qta.icon("fa5s.lightbulb", color=COLORS["cyan"]))
+        self.btn_about.setIcon(qta.icon("fa5s.info-circle", color=COLORS["text_muted"]))
+
+        self.sep1.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
+        self.sep2.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px; margin: 0 12px;")
+        self.sep3.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
+        self.sep4.setStyleSheet(f"background-color: {COLORS['border']}; max-height: 1px;")
+
+    def paintEvent(self, event):
+        """Paint the theme surface directly, leaving child palettes dynamic."""
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._theme_background)
+        painter.setPen(QPen(self._theme_border, 1))
+        painter.drawLine(self.width() - 1, 0, self.width() - 1, self.height())

@@ -17,21 +17,23 @@ from core.models import AudioTrack
 from core.database import Database
 from core.file_manager import open_file_in_explorer
 from gui.components.audio_player import AudioPlayer
-from gui.styles import COLORS
+from gui.styles import COLORS, get_current_theme, get_qss
 
 
 class QualityStatCard(QFrame):
-    def __init__(self, label: str, icon_name: str, color: str, parent=None):
+    def __init__(self, label: str, icon_name: str, color_key: str, parent=None):
         super().__init__(parent)
+        self.icon_name = icon_name
+        self.color_key = color_key
         self.setObjectName("card")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)
 
         top = QHBoxLayout()
-        icon = QLabel()
-        icon.setPixmap(qta.icon(icon_name, color=color).pixmap(14, 14))
-        top.addWidget(icon)
+        self.icon_lbl = QLabel()
+        self.icon_lbl.setPixmap(qta.icon(icon_name, color=COLORS[color_key]).pixmap(14, 14))
+        top.addWidget(self.icon_lbl)
 
         title = QLabel(label.upper())
         title.setObjectName("section_label")
@@ -41,11 +43,16 @@ class QualityStatCard(QFrame):
 
         self.value_lbl = QLabel("—")
         self.value_lbl.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        self.value_lbl.setStyleSheet(f"color: {color};")
+        self.value_lbl.setStyleSheet(f"color: {COLORS[color_key]};")
         layout.addWidget(self.value_lbl)
 
     def set_value(self, text: str):
         self.value_lbl.setText(text)
+
+    def refresh_theme(self):
+        color = COLORS[self.color_key]
+        self.icon_lbl.setPixmap(qta.icon(self.icon_name, color=color).pixmap(14, 14))
+        self.value_lbl.setStyleSheet(f"color: {color};")
 
 
 class QualityView(QWidget):
@@ -62,6 +69,7 @@ class QualityView(QWidget):
         
         self.current_page: int = 0
         self.page_size: int = 100
+        self._applied_theme: Optional[str] = None
 
         self._build_ui()
 
@@ -75,10 +83,10 @@ class QualityView(QWidget):
         title_block = QVBoxLayout()
         title_block.setSpacing(2)
 
-        lbl_header = QLabel("AUDITORÍA DE CALIDAD Y TRANSCODIFICACIÓN")
-        lbl_header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
-        title_block.addWidget(lbl_header)
+        self.lbl_header = QLabel("AUDITORÍA DE CALIDAD Y TRANSCODIFICACIÓN")
+        self.lbl_header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
+        title_block.addWidget(self.lbl_header)
 
         lbl_sub = QLabel("Evaluación heurística para detectar indicios compatibles con transcodificación y baja fidelidad.")
         lbl_sub.setObjectName("muted")
@@ -91,10 +99,10 @@ class QualityView(QWidget):
         kpi_row = QHBoxLayout()
         kpi_row.setSpacing(10)
 
-        self.card_avg = QualityStatCard("Score Promedio", "fa5s.chart-line", COLORS["cyan"])
-        self.card_lossless = QualityStatCard("Sin indicios lossy", "fa5s.gem", COLORS["success"])
-        self.card_fake = QualityStatCard("Fake Lossless", "fa5s.exclamation-triangle", COLORS["warning"])
-        self.card_low = QualityStatCard("Baja Calidad (<192k)", "fa5s.arrow-down", COLORS["danger"])
+        self.card_avg = QualityStatCard("Score Promedio", "fa5s.chart-line", "cyan")
+        self.card_lossless = QualityStatCard("Sin indicios lossy", "fa5s.gem", "success")
+        self.card_fake = QualityStatCard("Fake Lossless", "fa5s.exclamation-triangle", "warning")
+        self.card_low = QualityStatCard("Baja Calidad (<192k)", "fa5s.arrow-down", "danger")
 
         kpi_row.addWidget(self.card_avg)
         kpi_row.addWidget(self.card_lossless)
@@ -126,6 +134,11 @@ class QualityView(QWidget):
 
         self.btn_hires = QPushButton("✨ Hi-Res (>48kHz)")
         self.btn_hires.setCheckable(True)
+
+        for button in (
+            self.btn_all, self.btn_fake, self.btn_lossless, self.btn_low, self.btn_hires
+        ):
+            button.setObjectName("filter_tab")
 
         self.btn_group.addButton(self.btn_all, 0)
         self.btn_group.addButton(self.btn_fake, 1)
@@ -244,6 +257,28 @@ class QualityView(QWidget):
         p_layout.addWidget(self.combo_page_size)
 
         root.addWidget(pagination_bar)
+
+    def refresh_theme(self):
+        """Refresh the visible quality page and table semantic colors."""
+        theme = get_current_theme()
+        if self._applied_theme != theme:
+            self.setStyleSheet(get_qss(COLORS))
+            self._applied_theme = theme
+
+        self.lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
+        self.lbl_page_info.setStyleSheet(f"color: {COLORS['text_main']};")
+        for card in (self.card_avg, self.card_lossless, self.card_fake, self.card_low):
+            card.refresh_theme()
+        page_icons = (
+            (self.btn_first_page, "fa5s.angle-double-left"),
+            (self.btn_prev_page, "fa5s.angle-left"),
+            (self.btn_next_page, "fa5s.angle-right"),
+            (self.btn_last_page, "fa5s.angle-double-right"),
+        )
+        for button, icon_name in page_icons:
+            button.setIcon(qta.icon(icon_name, color=COLORS["text_main"]))
+
+        self._render_table()
 
     def set_folder(self, folder: str):
         self.current_folder = folder

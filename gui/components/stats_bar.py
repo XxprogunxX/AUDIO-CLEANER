@@ -1,6 +1,6 @@
 """
 Stats Bar component — top summary row with KPI cards.
-Audio Cleaner Figma design.
+Audio Cleaner Figma design with full dynamic theme support.
 """
 
 from PyQt6.QtWidgets import (
@@ -17,17 +17,21 @@ class StatCard(QFrame):
     def __init__(self, label: str, icon_name: str, accent: str,
                  large: bool = False, parent=None):
         super().__init__(parent)
-        self.setObjectName("card")
+        self._label = label
+        self._icon_name = icon_name
         self._accent = accent
+        self._large = large
+
+        self.setObjectName("stat_card_large" if large else "card")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(4)
 
         top = QHBoxLayout()
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(qta.icon(icon_name, color=accent).pixmap(14, 14))
-        top.addWidget(icon_lbl)
+        self.icon_lbl = QLabel()
+        self.icon_lbl.setPixmap(qta.icon(icon_name, color=accent).pixmap(14, 14))
+        top.addWidget(self.icon_lbl)
 
         lbl = QLabel(label.upper())
         lbl.setObjectName("section_label")
@@ -41,14 +45,24 @@ class StatCard(QFrame):
         self.value_lbl.setStyleSheet(f"color: {accent};")
         layout.addWidget(self.value_lbl)
 
-        if large:
-            self.setStyleSheet(
-                f"QFrame#card {{ background-color: {COLORS['cyan_bg']};"
-                f"border: 1px solid {COLORS['cyan_dim']}; border-radius: 8px; }}"
-            )
-
     def set_value(self, text: str):
         self.value_lbl.setText(text)
+
+    def refresh_theme(self):
+        from gui.styles import COLORS
+        if self._large:
+            self.setObjectName("stat_card_large")
+            self._accent = COLORS["cyan"]
+            self.value_lbl.setStyleSheet(f"color: {COLORS['cyan']};")
+            self.icon_lbl.setPixmap(qta.icon(self._icon_name, color=COLORS["cyan"]).pixmap(14, 14))
+        else:
+            self.setObjectName("card")
+            accent = COLORS["text_main"] if "Duplicados" in self._label else COLORS["text_muted"]
+            self._accent = accent
+            self.value_lbl.setStyleSheet(f"color: {accent};")
+            self.icon_lbl.setPixmap(qta.icon(self._icon_name, color=accent).pixmap(14, 14))
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class StatsBar(QWidget):
@@ -109,6 +123,16 @@ class StatsBar(QWidget):
         btn_col.addWidget(self.btn_delete)
 
         root.addLayout(btn_col)
+
+    def refresh_theme(self):
+        from gui.styles import COLORS
+        self.card_groups.refresh_theme()
+        self.card_files.refresh_theme()
+        self.card_space.refresh_theme()
+
+        self.btn_auto.setIcon(qta.icon("fa5s.magic", color=COLORS["text_muted"]))
+        self.btn_move.setIcon(qta.icon("fa5s.folder-open", color=COLORS["text_muted"]))
+        self.btn_delete.setIcon(qta.icon("fa5s.trash-alt", color="white"))
 
     def update_stats(self, groups_count: int, files_count: int, space_bytes: float):
         self.card_groups.set_value(f"{groups_count:,}")

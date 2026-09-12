@@ -10,9 +10,11 @@ from typing import List, Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QFileDialog, QMessageBox, QApplication,
-    QFrame, QSizePolicy, QDialog, QStackedWidget
+    QFrame, QSizePolicy, QDialog, QStackedWidget, QLineEdit, QComboBox,
+    QSpinBox, QDoubleSpinBox, QSlider
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter
 
 from enum import Enum
 from core.models import DuplicateGroup, DuplicateType, ScanStats, FileAction, prune_duplicate_groups
@@ -32,6 +34,8 @@ from gui.components.sidebar import Sidebar
 from gui.components.stats_bar import StatsBar
 from gui.components.bottom_player import BottomPlayerBar
 from gui.components.delete_modal import DeleteModal
+from gui.components.about_modal import AboutModal
+from gui.components.feedback_modal import FeedbackModal
 from gui.components.library_view import LibraryView
 from gui.components.quality_view import QualityView
 from gui.components.settings_view import SettingsView
@@ -45,6 +49,40 @@ class WorkerState(str, Enum):
     STOPPED = "STOPPED"
     RUNNING = "RUNNING"
     CANCELLING = "CANCELLING"
+
+
+class ThemeSurface(QWidget):
+    """A cheap solid-color surface that does not freeze descendant palettes."""
+
+    def __init__(self, color: str, parent=None):
+        super().__init__(parent)
+        self._theme_color = QColor(color)
+
+    def set_theme_color(self, color: str):
+        self._theme_color = QColor(color)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._theme_color)
+
+
+class ThemeStackedWidget(QStackedWidget):
+    """Stack background equivalent of ThemeSurface."""
+
+    def __init__(self, color: str, parent=None):
+        super().__init__(parent)
+        self._theme_color = QColor(color)
+
+    def set_theme_color(self, color: str):
+        self._theme_color = QColor(color)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._theme_color)
 
 
 class ScannerWorker(QThread):
@@ -120,7 +158,10 @@ class AudioDuplicateDetectorApp(QMainWindow):
         self.current_search_query: str = ""
         self.current_sort_mode: str = "Mayor Ahorro de Espacio"
 
-        self.PAGE_SIZE: int = 50
+        # Each comparison card owns many rich labels and controls. Twenty cards
+        # still provide a generous scroll buffer while keeping the live widget
+        # tree small enough for instant filtering and theme changes.
+        self.PAGE_SIZE: int = 20
         self._current_page: int = 0
         self._render_job_id: int = 0
 
@@ -184,7 +225,7 @@ class AudioDuplicateDetectorApp(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_layout(self):
-        central = QWidget()
+        central = ThemeSurface(COLORS["bg_darkest"])
         central.setObjectName("main_window")
         self.setCentralWidget(central)
 
@@ -201,10 +242,13 @@ class AudioDuplicateDetectorApp(QMainWindow):
         self.sidebar = Sidebar()
         self.sidebar.nav_changed.connect(self._on_nav_changed)
         self.sidebar.folder_requested.connect(self._choose_folder)
+        self.sidebar.feedback_requested.connect(self._open_feedback_modal)
+        self.sidebar.about_requested.connect(self._open_about_modal)
+        self.sidebar.theme_toggle_requested.connect(self._toggle_theme)
         content_row.addWidget(self.sidebar)
 
         # Main Stacked Panel
-        self.stack = QStackedWidget()
+        self.stack = ThemeStackedWidget(COLORS["bg_main"])
         self.stack.setObjectName("main_panel")
 
         # ── Page 0: Library View ───────────────────────────────────
@@ -226,7 +270,7 @@ class AudioDuplicateDetectorApp(QMainWindow):
         self.stack.addWidget(self.scanner_view)
 
         # ── Page 2: Duplicates View (Main Analysis) ────────────────
-        self.duplicates_view = QWidget()
+        self.duplicates_view = ThemeSurface(COLORS["bg_main"])
         self.duplicates_view.setObjectName("main_panel")
         dup_layout = QVBoxLayout(self.duplicates_view)
         dup_layout.setContentsMargins(24, 20, 24, 20)
@@ -255,8 +299,8 @@ class AudioDuplicateDetectorApp(QMainWindow):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        self.scroll_content = QWidget()
-        self.scroll_content.setStyleSheet(f"background-color: {COLORS['bg_main']};")
+        self.scroll_content = ThemeSurface(COLORS["bg_main"])
+        self.scroll_content.setObjectName("results_content")
         self.scroll_layout = QVBoxLayout(self.scroll_content)
         self.scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.scroll_layout.setContentsMargins(0, 0, 8, 0)
@@ -274,6 +318,9 @@ class AudioDuplicateDetectorApp(QMainWindow):
         # ── Page 4: Settings View ──────────────────────────────────
         self.settings_view = SettingsView(db=self.db)
         self.settings_view.settings_saved.connect(self._on_settings_saved)
+        self.settings_view.feedback_requested.connect(self._open_feedback_modal)
+        self.settings_view.about_requested.connect(self._open_about_modal)
+        self.settings_view.theme_changed.connect(self._set_theme)
         self.stack.addWidget(self.settings_view)
 
         content_row.addWidget(self.stack, stretch=1)
@@ -311,6 +358,10 @@ class AudioDuplicateDetectorApp(QMainWindow):
         elif section == "Configuración":
             self.stack.setCurrentIndex(4)
             self.settings_view.refresh_db_stats()
+
+        visible_page = self.stack.currentWidget()
+        if hasattr(visible_page, "refresh_theme"):
+            visible_page.refresh_theme()
 
     def set_active_folder(self, folder: str, save_session: bool = True):
         self.current_folder = folder
@@ -489,6 +540,7 @@ class AudioDuplicateDetectorApp(QMainWindow):
         icon_lbl.setPixmap(
             qta.icon("fa5s.wave-square", color=COLORS["text_dim"]).pixmap(72, 72)
         )
+        self._empty_icon_lbl = icon_lbl
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(icon_lbl)
 
@@ -496,6 +548,7 @@ class AudioDuplicateDetectorApp(QMainWindow):
             message = "No se han encontrado duplicados"
         msg_lbl = QLabel(message)
         msg_lbl.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {COLORS['text_dim']};")
+        self._empty_message_lbl = msg_lbl
         msg_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(msg_lbl)
 
@@ -504,12 +557,14 @@ class AudioDuplicateDetectorApp(QMainWindow):
             "para detectar archivos duplicados y evaluar calidad."
         )
         sub_lbl.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10pt;")
+        self._empty_subtitle_lbl = sub_lbl
         sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(sub_lbl)
 
         btn_scan = QPushButton("  Iniciar escaneo de biblioteca")
         btn_scan.setObjectName("primary")
         btn_scan.setIcon(qta.icon("fa5s.search", color="#000000"))
+        self._empty_scan_btn = btn_scan
         btn_scan.setFixedSize(260, 40)
         btn_scan.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_scan.clicked.connect(self._start_scan)
@@ -727,6 +782,134 @@ class AudioDuplicateDetectorApp(QMainWindow):
             self.quality_view.reload_tracks()
             self._refresh_view()
 
+    def _open_about_modal(self):
+        modal = AboutModal(parent=self)
+        modal.exec()
+
+    def _open_feedback_modal(self):
+        modal = FeedbackModal(parent=self)
+        modal.exec()
+
+    def _on_settings_saved(self, config: dict):
+        theme = config.get("theme")
+        if theme:
+            self._set_theme(theme)
+
+    def _toggle_theme(self):
+        from gui.styles import get_current_theme
+        curr = get_current_theme()
+        new_theme = "light" if curr == "dark" else "dark"
+        self._set_theme(new_theme)
+
+    def _set_theme(self, theme_name: str):
+        from gui.styles import apply_theme, get_current_theme
+
+        if theme_name not in ("dark", "light") or theme_name == get_current_theme():
+            return
+
+        # Do not expose Qt's intermediate repaint states. Those were responsible
+        # for controls briefly losing their background or text contrast.
+        self.setUpdatesEnabled(False)
+        try:
+            apply_theme(theme_name, QApplication.instance())
+            self._refresh_all_theme_components()
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
+
+    @staticmethod
+    def _set_surface_color(widget: QWidget, color: str):
+        """Update one container without reparsing or freezing child palettes."""
+        if hasattr(widget, "set_theme_color"):
+            widget.set_theme_color(color)
+        else:
+            widget.update()
+
+    def _refresh_all_theme_components(self):
+        from gui.styles import COLORS
+        from gui.components.duplicate_card import DuplicateGroupCard
+
+        # --- Fast, non-blocking updates for static components ---
+        if hasattr(self, "sidebar") and hasattr(self.sidebar, "refresh_theme"):
+            self.sidebar.refresh_theme()
+
+        if hasattr(self, "stats_bar") and hasattr(self.stats_bar, "refresh_theme"):
+            self.stats_bar.refresh_theme()
+
+        if hasattr(self, "filter_bar") and hasattr(self.filter_bar, "refresh_theme"):
+            self.filter_bar.refresh_theme()
+
+        if hasattr(self, "bottom_player") and hasattr(self.bottom_player, "refresh_theme"):
+            self.bottom_player.refresh_theme()
+
+        # Only the visible data page gets a literal, theme-specific stylesheet.
+        # Hidden pages refresh lazily on navigation. This fixes stale surfaces
+        # without repeating the original whole-window repolish pause.
+        visible_page = self.stack.currentWidget() if hasattr(self, "stack") else None
+        if visible_page is not None and hasattr(visible_page, "refresh_theme"):
+            visible_page.refresh_theme()
+
+        if hasattr(self, "scroll_content"):
+            self._set_surface_color(self.scroll_content, COLORS["bg_main"])
+            # Re-resolve palette roles only for the bounded card subtree. This
+            # is much cheaper than resetting the application stylesheet and is
+            # required by Qt for custom/rich-text card descendants.
+            self.scroll_content.setStyleSheet(
+                f"QWidget#results_content {{ background-color: {COLORS['bg_main']}; }}"
+            )
+        central = self.centralWidget()
+        if central is not None:
+            self._set_surface_color(central, COLORS["bg_darkest"])
+        if hasattr(self, "stack"):
+            self._set_surface_color(self.stack, COLORS["bg_main"])
+        if hasattr(self, "duplicates_view"):
+            self._set_surface_color(self.duplicates_view, COLORS["bg_main"])
+
+        # Native input controls cache palette brushes under Qt stylesheets.
+        # Re-polishing these few leaf widgets prevents dark fields in light mode
+        # without touching their parents or the rest of the widget tree.
+        input_root = visible_page if visible_page is not None else self
+        for widget_type in (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QSlider):
+            for widget in input_root.findChildren(widget_type):
+                style = widget.style()
+                style.unpolish(widget)
+                style.polish(widget)
+                widget.update()
+
+        # Empty/filter-empty views contain pixmap icons and intentional inline
+        # typography, so refresh those directly without rebuilding the layout.
+        try:
+            self._empty_icon_lbl.setPixmap(
+                qta.icon("fa5s.wave-square", color=COLORS["text_dim"]).pixmap(72, 72)
+            )
+            self._empty_message_lbl.setStyleSheet(
+                f"font-size: 14pt; font-weight: bold; color: {COLORS['text_dim']};"
+            )
+            self._empty_subtitle_lbl.setStyleSheet(
+                f"color: {COLORS['text_dim']}; font-size: 10pt;"
+            )
+            self._empty_scan_btn.setIcon(
+                qta.icon("fa5s.search", color=COLORS["primary_text"])
+            )
+        except (AttributeError, RuntimeError):
+            pass
+
+        # QApplication.setStyleSheet already repolishes all normal widgets.
+        # Cards only need their raster icons and explicit semantic actions
+        # refreshed; recursively repolishing every descendant doubled the work.
+        if not hasattr(self, "scroll_layout"):
+            return
+
+        for i in range(self.scroll_layout.count()):
+            item = self.scroll_layout.itemAt(i)
+            if item:
+                w = item.widget()
+                if isinstance(w, DuplicateGroupCard) and not w.isHidden():
+                    try:
+                        w.refresh_theme()
+                    except RuntimeError:
+                        pass
+
     def closeEvent(self, event):
         """Properly clean up resources on window close."""
         logger = logging.getLogger(__name__)
@@ -778,7 +961,9 @@ def run_gui(initial_folder=None):
             pass
 
     app = QApplication(sys.argv)
-    app.setStyleSheet(GLOBAL_QSS)
+    from gui.styles import apply_theme, load_theme_preference
+    saved_theme = load_theme_preference()
+    apply_theme(saved_theme, app)
 
     icon_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app_icon.png"

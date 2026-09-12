@@ -46,13 +46,17 @@ class FilterBar(QFrame):
         # Segmented Filter (ButtonGroup)
         self.filter_group = QButtonGroup(self)
         self.btn_all = QPushButton("Todos")
+        self.btn_all.setObjectName("filter_tab")
         self.btn_all.setCheckable(True)
         self.btn_all.setChecked(True)
         self.btn_exact = QPushButton("Exactos")
+        self.btn_exact.setObjectName("filter_tab")
         self.btn_exact.setCheckable(True)
         self.btn_acoustic = QPushButton("Acústicos")
+        self.btn_acoustic.setObjectName("filter_tab")
         self.btn_acoustic.setCheckable(True)
         self.btn_possible = QPushButton("Posibles")
+        self.btn_possible.setObjectName("filter_tab")
         self.btn_possible.setCheckable(True)
 
         self.filter_group.addButton(self.btn_all, 0)
@@ -178,3 +182,12 @@ class FilterBar(QFrame):
     def _trigger_delete(self):
         if self.on_delete_duplicates:
             self.on_delete_duplicates()
+
+    def refresh_theme(self):
+        from gui.styles import COLORS
+        self.btn_auto.setIcon(qta.icon("fa5s.magic", color="white"))
+        self.btn_move.setIcon(qta.icon("fa5s.folder", color=COLORS.get("primary_text", "#FFFFFF")))
+        self.btn_delete.setIcon(qta.icon("fa5s.trash", color="white"))
+        for btn in (self.btn_all, self.btn_exact, self.btn_acoustic, self.btn_possible, self.btn_auto, self.btn_move, self.btn_delete):
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)

@@ -17,7 +17,7 @@ from core.models import AudioTrack
 from core.database import Database
 from core.file_manager import open_file_in_explorer
 from gui.components.audio_player import AudioPlayer
-from gui.styles import COLORS
+from gui.styles import COLORS, get_current_theme, get_qss
 
 
 class LibraryView(QWidget):
@@ -34,6 +34,8 @@ class LibraryView(QWidget):
 
         self.current_page: int = 0
         self.page_size: int = 100
+        self._applied_theme: Optional[str] = None
+        self._format_dots: List[QLabel] = []
 
         self._build_ui()
 
@@ -276,6 +278,7 @@ class LibraryView(QWidget):
         self.combo_format.blockSignals(False)
 
         # Build chips
+        self._format_dots = []
         for fmt, cnt in sorted(format_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
             chip = QFrame()
             chip.setObjectName("card")
@@ -285,6 +288,7 @@ class LibraryView(QWidget):
 
             dot = QLabel("●")
             dot.setStyleSheet(f"color: {COLORS['cyan']}; font-size: 8pt;")
+            self._format_dots.append(dot)
             lbl = QLabel(f"<b>{fmt}</b>: {cnt:,}")
             lbl.setFont(QFont("Segoe UI", 8))
             chip_l.addWidget(dot)
@@ -292,6 +296,35 @@ class LibraryView(QWidget):
             self.formats_layout.addWidget(chip)
 
         self.formats_layout.addStretch()
+
+    def refresh_theme(self):
+        """Refresh the visible library page without repolishing the whole app."""
+        theme = get_current_theme()
+        if self._applied_theme != theme:
+            self.setStyleSheet(get_qss(COLORS))
+            self._applied_theme = theme
+
+        self.lbl_folder_path.setStyleSheet(f"color: {COLORS['cyan']};")
+        self.lbl_page_info.setStyleSheet(f"color: {COLORS['text_main']};")
+        self.btn_change_folder.setIcon(
+            qta.icon("fa5s.folder-open", color=COLORS["text_muted"])
+        )
+        self.btn_scan_now.setIcon(
+            qta.icon("fa5s.sync", color=COLORS["primary_text"])
+        )
+        page_icons = (
+            (self.btn_first_page, "fa5s.angle-double-left"),
+            (self.btn_prev_page, "fa5s.angle-left"),
+            (self.btn_next_page, "fa5s.angle-right"),
+            (self.btn_last_page, "fa5s.angle-double-right"),
+        )
+        for button, icon_name in page_icons:
+            button.setIcon(qta.icon(icon_name, color=COLORS["text_main"]))
+        for dot in self._format_dots:
+            dot.setStyleSheet(f"color: {COLORS['cyan']}; font-size: 8pt;")
+
+        # Table items and action icons use semantic colors stored at render time.
+        self._render_table()
 
     def _apply_search(self):
         query = self.search_input.text().strip().lower()

@@ -13,21 +13,23 @@ from PyQt6.QtGui import QFont
 import qtawesome as qta
 
 from core.models import ScanStats
-from gui.styles import COLORS
+from gui.styles import COLORS, get_current_theme, get_qss
 
 
 class ScanMetricCard(QFrame):
-    def __init__(self, title: str, icon_name: str, color: str, parent=None):
+    def __init__(self, title: str, icon_name: str, color_key: str, parent=None):
         super().__init__(parent)
+        self.icon_name = icon_name
+        self.color_key = color_key
         self.setObjectName("card")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(4)
 
         top = QHBoxLayout()
-        icon = QLabel()
-        icon.setPixmap(qta.icon(icon_name, color=color).pixmap(15, 15))
-        top.addWidget(icon)
+        self.icon_lbl = QLabel()
+        self.icon_lbl.setPixmap(qta.icon(icon_name, color=COLORS[color_key]).pixmap(15, 15))
+        top.addWidget(self.icon_lbl)
 
         t_lbl = QLabel(title.upper())
         t_lbl.setObjectName("section_label")
@@ -37,11 +39,16 @@ class ScanMetricCard(QFrame):
 
         self.val_lbl = QLabel("—")
         self.val_lbl.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
-        self.val_lbl.setStyleSheet(f"color: {color};")
+        self.val_lbl.setStyleSheet(f"color: {COLORS[color_key]};")
         layout.addWidget(self.val_lbl)
 
     def set_value(self, text: str):
         self.val_lbl.setText(text)
+
+    def refresh_theme(self):
+        color = COLORS[self.color_key]
+        self.icon_lbl.setPixmap(qta.icon(self.icon_name, color=color).pixmap(15, 15))
+        self.val_lbl.setStyleSheet(f"color: {color};")
 
 
 class ScannerView(QWidget):
@@ -57,6 +64,7 @@ class ScannerView(QWidget):
         self.is_scanning = False
         self.is_paused = False
         self.current_folder = ""
+        self._applied_theme: Optional[str] = None
 
         self._build_ui()
 
@@ -69,10 +77,10 @@ class ScannerView(QWidget):
         title_block = QVBoxLayout()
         title_block.setSpacing(2)
 
-        lbl_header = QLabel("PANEL DE ESCANEO DE AUDIO")
-        lbl_header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
-        title_block.addWidget(lbl_header)
+        self.lbl_header = QLabel("PANEL DE ESCANEO DE AUDIO")
+        self.lbl_header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
+        title_block.addWidget(self.lbl_header)
 
         self.lbl_folder = QLabel("Carpeta activa: Sin seleccionar")
         self.lbl_folder.setObjectName("muted")
@@ -88,10 +96,10 @@ class ScannerView(QWidget):
         idle_layout.setContentsMargins(40, 60, 40, 60)
         idle_layout.setSpacing(18)
 
-        icon_idle = QLabel()
-        icon_idle.setPixmap(qta.icon("fa5s.search", color=COLORS["cyan"]).pixmap(64, 64))
-        icon_idle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        idle_layout.addWidget(icon_idle)
+        self.icon_idle = QLabel()
+        self.icon_idle.setPixmap(qta.icon("fa5s.search", color=COLORS["cyan"]).pixmap(64, 64))
+        self.icon_idle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        idle_layout.addWidget(self.icon_idle)
 
         lbl_idle_t = QLabel("Preparado para Analizar Biblioteca")
         lbl_idle_t.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
@@ -202,10 +210,10 @@ class ScannerView(QWidget):
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(10)
 
-        self.card_files = ScanMetricCard("Archivos Procesados", "fa5s.music", COLORS["text_main"])
-        self.card_cache = ScanMetricCard("Caché Hits", "fa5s.bolt", COLORS["cyan"])
-        self.card_exact = ScanMetricCard("Duplicados Exactos", "fa5s.copy", COLORS["success"])
-        self.card_acoustic = ScanMetricCard("Duplicados Acústicos", "fa5s.wave-square", COLORS["info"])
+        self.card_files = ScanMetricCard("Archivos Procesados", "fa5s.music", "text_main")
+        self.card_cache = ScanMetricCard("Caché Hits", "fa5s.bolt", "cyan")
+        self.card_exact = ScanMetricCard("Duplicados Exactos", "fa5s.copy", "success")
+        self.card_acoustic = ScanMetricCard("Duplicados Acústicos", "fa5s.wave-square", "info")
 
         metrics_row.addWidget(self.card_files)
         metrics_row.addWidget(self.card_cache)
@@ -245,6 +253,38 @@ class ScannerView(QWidget):
         active_layout.addStretch()
         self.active_frame.hide()
         root.addWidget(self.active_frame, stretch=1)
+
+    def refresh_theme(self):
+        """Refresh idle/active scanner surfaces and their cached raster icons."""
+        theme = get_current_theme()
+        if self._applied_theme != theme:
+            self.setStyleSheet(get_qss(COLORS))
+            self._applied_theme = theme
+
+        self.lbl_header.setStyleSheet(f"color: {COLORS['text_main']};")
+        self.icon_idle.setPixmap(
+            qta.icon("fa5s.search", color=COLORS["cyan"]).pixmap(64, 64)
+        )
+        self.btn_idle_folder.setIcon(
+            qta.icon("fa5s.folder-open", color=COLORS["text_muted"])
+        )
+        self.btn_idle_start.setIcon(
+            qta.icon("fa5s.play", color=COLORS["primary_text"])
+        )
+        self.lbl_phase.setStyleSheet(f"color: {COLORS['cyan']};")
+        self.btn_pause.setIcon(
+            qta.icon(
+                "fa5s.play" if self.is_paused else "fa5s.pause",
+                color=COLORS["cyan"] if self.is_paused else COLORS["text_muted"],
+            )
+        )
+        self.finish_card.setStyleSheet(
+            f"background-color: {COLORS['cyan_bg']}; "
+            f"border: 1px solid {COLORS['cyan_dim']};"
+        )
+        self.lbl_finish_title.setStyleSheet(f"color: {COLORS['cyan']};")
+        for card in (self.card_files, self.card_cache, self.card_exact, self.card_acoustic):
+            card.refresh_theme()
 
     def set_folder(self, folder: str):
         self.current_folder = folder

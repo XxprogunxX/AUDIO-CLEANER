@@ -133,7 +133,9 @@ class InteractiveWaveformSeeker(QWidget):
 
         # Background track container
         bg_rect = QRectF(0, (h - 24) / 2, w, 24)
-        painter.setBrush(QColor(15, 23, 42, 100))
+        bg_col = QColor(COLORS["border"])
+        bg_col.setAlpha(70)
+        painter.setBrush(bg_col)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(bg_rect, 4, 4)
 
@@ -159,11 +161,11 @@ class InteractiveWaveformSeeker(QWidget):
             is_played = (x + bar_w / 2.0) <= cutoff_x
 
             if is_played:
-                # Active Glowing Cyan
-                painter.setBrush(QColor(0, 229, 255))
+                # Active Glowing Accent
+                painter.setBrush(QColor(COLORS["cyan"]))
             else:
-                # Dark Slate Inactive
-                painter.setBrush(QColor(42, 53, 72))
+                # Inactive bar
+                painter.setBrush(QColor(COLORS["border"]))
 
             painter.drawRoundedRect(QRectF(x, y, bar_w, bar_height), 1.5, 1.5)
 
@@ -183,7 +185,7 @@ class BottomPlayerBar(QFrame):
         self.setFixedHeight(76)
         self.setStyleSheet(f"""
             BottomPlayerBar {{
-                background-color: #0A0F18;
+                background-color: {COLORS['bg_darkest']};
                 border-top: 1px solid {COLORS['border']};
             }}
         """)
@@ -230,7 +232,7 @@ class BottomPlayerBar(QFrame):
         self.btn_play = QPushButton()
         self.btn_play.setFixedSize(44, 44)
         self.btn_play.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_play.setIcon(qta.icon("fa5s.play", color="#0A0F18"))
+        self.btn_play.setIcon(qta.icon("fa5s.play", color=COLORS.get("primary_text", "#000000")))
         self.btn_play.setToolTip("Reproducir / Pausar")
         self.btn_play.setStyleSheet(f"""
             QPushButton {{
@@ -239,10 +241,10 @@ class BottomPlayerBar(QFrame):
                 border-radius: 22px;
             }}
             QPushButton:hover {{
-                background-color: #33ECFF;
+                background-color: {COLORS['primary_hover']};
             }}
             QPushButton:pressed {{
-                background-color: #00B8D4;
+                background-color: {COLORS['cyan_dim']};
             }}
         """)
         self.btn_play.clicked.connect(self._toggle_play)
@@ -287,7 +289,7 @@ class BottomPlayerBar(QFrame):
         # Title
         self.lbl_title = QLabel("Sin reproducción activa")
         self.lbl_title.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        self.lbl_title.setStyleSheet("color: #F8FAFC;")
+        self.lbl_title.setStyleSheet(f"color: {COLORS['text_main']};")
 
         # Technical specs
         self.lbl_specs = QLabel("Seleccione una pista para reproducir")
@@ -332,13 +334,14 @@ class BottomPlayerBar(QFrame):
         root.addWidget(wave_container, stretch=1)
 
     def _on_playback_changed(self, filepath: str, is_playing: bool):
+        play_icon_color = COLORS.get("primary_text", "#000000")
         if is_playing:
             self._current_file = filepath
-            self.btn_play.setIcon(qta.icon("fa5s.pause", color="#0A0F18"))
+            self.btn_play.setIcon(qta.icon("fa5s.pause", color=play_icon_color))
             self.btn_play.setToolTip("Pausar")
             self._update_track_labels(filepath)
         else:
-            self.btn_play.setIcon(qta.icon("fa5s.play", color="#0A0F18"))
+            self.btn_play.setIcon(qta.icon("fa5s.play", color=play_icon_color))
             self.btn_play.setToolTip("Reproducir")
 
     def _on_position_updated(self, current_pos: float, total_dur: float):
@@ -397,3 +400,59 @@ class BottomPlayerBar(QFrame):
         """Starts playback and customizes channel label if comparing."""
         self.lbl_channel.setText(channel_label)
         self._player.play(filepath)
+
+    def refresh_theme(self):
+        """Refreshes player bar styles, icons and waveform seeker upon theme change."""
+        self.setStyleSheet(f"""
+            BottomPlayerBar {{
+                background-color: {COLORS['bg_darkest']};
+                border-top: 1px solid {COLORS['border']};
+            }}
+        """)
+        self.btn_back.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_surface']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 17px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['bg_card_highlight']};
+                border-color: {COLORS['cyan_dim']};
+            }}
+        """)
+        self.btn_back.setIcon(qta.icon("fa5s.undo", color=COLORS["text_muted"]))
+
+        self.btn_fwd.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_surface']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 17px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['bg_card_highlight']};
+                border-color: {COLORS['cyan_dim']};
+            }}
+        """)
+        self.btn_fwd.setIcon(qta.icon("fa5s.redo", color=COLORS["text_muted"]))
+
+        self.btn_play.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['cyan']};
+                border: none;
+                border-radius: 22px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['primary_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {COLORS['cyan_dim']};
+            }}
+        """)
+        self._on_playback_changed(self._current_file, self._player.is_playing)
+
+        self.lbl_channel.setStyleSheet(f"color: {COLORS['cyan']}; letter-spacing: 1px;")
+        self.lbl_title.setStyleSheet(f"color: {COLORS['text_main']};")
+        self.lbl_specs.setStyleSheet(f"color: {COLORS['text_muted']};")
+        self.lbl_current_time.setStyleSheet(f"color: {COLORS['text_main']};")
+        self.lbl_total_time.setStyleSheet(f"color: {COLORS['text_muted']};")
+        self.waveform_seeker.update()
